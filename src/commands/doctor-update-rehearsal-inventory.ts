@@ -384,7 +384,7 @@ export async function inspectPreparedDoctorRehearsal(params: {
   const resources = [...pluginScope.resources, ...workshopInventory.value];
   const selectedMigrationRoots = configuredMigrationRoots
     .filter(({ pluginId }) => !pluginScope.deferredPluginIds.has(pluginId))
-    .map(({ path }) => path);
+    .map((root) => root.path);
   for (const root of selectedMigrationRoots) {
     inspectPath(root);
   }

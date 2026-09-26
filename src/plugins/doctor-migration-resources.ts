@@ -77,11 +77,14 @@ export async function preparePluginDoctorMigrationResources(
         )
       : [],
   );
-  const selectedPaths = new Set(
-    [...pluginResources].flatMap(([pluginId, paths]) =>
-      deferredPluginIds.has(pluginId) ? [] : [...paths],
-    ),
-  );
+  const selectedPaths = new Set<string>();
+  for (const [pluginId, paths] of pluginResources) {
+    if (!deferredPluginIds.has(pluginId)) {
+      for (const resourcePath of paths) {
+        selectedPaths.add(resourcePath);
+      }
+    }
+  }
   const selectedResources = [...resources.values()]
     .filter((resource) => selectedPaths.has(resource.path))
     .toSorted((left, right) => left.path.localeCompare(right.path));
