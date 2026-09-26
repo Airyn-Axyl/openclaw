@@ -1025,7 +1025,7 @@ class GatewaySessionReconnectTest {
             async(start = CoroutineStart.UNDISPATCHED) {
               runCatching {
                 if (fireAndForget) {
-                  harness.session.sendRequestFrame("transport-fence-test", null, onError = errors::add)
+                  harness.session.sendRequestFrameForEndpoint(harness.session.currentEndpointStableId(), "transport-fence-test", null, onError = errors::add)
                 } else {
                   harness.session.request("transport-fence-test", null)
                 }

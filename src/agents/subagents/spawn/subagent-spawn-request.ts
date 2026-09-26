@@ -10,7 +10,7 @@ import { resolveSpawnAdmission, resolveSpawnMode } from "../../spawn-plan.js";
 import { listSwarmRunsForGroup } from "../registry/subagent-registry.js";
 import { resolveSwarmConfig } from "../swarm/swarm-config.js";
 import { validateStructuredOutputSchema } from "../swarm/swarm-output-schema.js";
-import { reserveSwarmRun } from "../swarm/swarm-scheduler.js";
+import { holdQueuedSwarmRun, reserveSwarmRun } from "../swarm/swarm-scheduler.js";
 import { resolveSubagentContextMode } from "./subagent-spawn-context.js";
 import type {
   SpawnSubagentContext,
@@ -22,8 +22,7 @@ import { resolveConfiguredSubagentRunTimeoutSeconds } from "./subagent-spawn-pla
 import {
   getGlobalHookRunner,
   getRuntimeConfig,
-  loadSessionEntry,
-  resolveGatewaySessionStoreTarget,
+  resolveGatewaySessionStoreTargetInWorker,
 } from "./subagent-spawn.runtime.js";
 import { normalizeSubagentTaskName } from "./subagent-task-name.js";
 
@@ -31,7 +30,7 @@ function rejectSubagentSpawnRequest(status: "error" | "forbidden", error: string
   return { ok: false as const, result: { status, error } satisfies SpawnSubagentResult };
 }
 
-export function resolveSubagentSpawnRequest(
+export async function resolveSubagentSpawnRequest(
   params: SpawnSubagentParams,
   ctx: SpawnSubagentContext,
 ) {
@@ -120,22 +119,29 @@ export function resolveSubagentSpawnRequest(
   // Capture the requester window before launch; a reset must not move child
   // progress receipts or private results to a replacement session at the same key.
   let completionRequesterSessionId: string | undefined;
-  try {
-    const target = resolveGatewaySessionStoreTarget({
-      cfg,
-      key: ownership.completionRequesterSessionKey,
-      agentId: ctx.requesterAgentIdOverride,
-    });
-    completionRequesterSessionId = loadSessionEntry({
-      storePath: target.storePath,
-      sessionKey: target.canonicalKey,
-      clone: false,
-    })?.sessionId;
-  } catch (error) {
-    return rejectSubagentSpawnRequest(
-      "error",
-      `sessions_spawn could not read the requester session: ${summarizeSpawnError(error)}`,
-    );
+  const captureRequesterSession = async () => {
+    try {
+      const target = await resolveGatewaySessionStoreTargetInWorker({
+        cfg,
+        key: ownership.completionRequesterSessionKey,
+        agentId: ctx.requesterAgentIdOverride,
+        assertActive: ctx.assertActive,
+      });
+      ctx.assertActive?.();
+      completionRequesterSessionId = target.store[target.canonicalKey]?.sessionId;
+      return undefined;
+    } catch (error) {
+      return rejectSubagentSpawnRequest(
+        "error",
+        `sessions_spawn could not read the requester session: ${summarizeSpawnError(error)}`,
+      );
+    }
+  };
+  if (!params.collect) {
+    const rejection = await captureRequesterSession();
+    if (rejection) {
+      return rejection;
+    }
   }
   if (params.completionTarget === "parent" && !completionRequesterSessionId) {
     return rejectSubagentSpawnRequest(
@@ -227,6 +233,14 @@ export function resolveSubagentSpawnRequest(
       additionalActiveChildren: pendingChildren,
     });
   };
+  try {
+    ctx.assertActive?.();
+  } catch (error) {
+    return rejectSubagentSpawnRequest(
+      "error",
+      `sessions_spawn could not read the requester session: ${summarizeSpawnError(error)}`,
+    );
+  }
   const admissionReservation = params.collect
     ? undefined
     : reserveChildAdmissionSlot({
@@ -262,7 +276,7 @@ export function resolveSubagentSpawnRequest(
         .digest("hex")
         .slice(0, 32)}`
     : crypto.randomUUID();
-  let reservationPending = false;
+  let swarmReservation: ReturnType<typeof holdQueuedSwarmRun>;
   let soleImplicitMember = false;
   if (params.collect && swarmGroupId && swarmSchedulerGroupKey) {
     const groupRuns = listSwarmRunsForGroup(swarmGroupId, requesterInternalKey, requesterAgentId);
@@ -287,7 +301,25 @@ export function resolveSubagentSpawnRequest(
         "sessions_spawn could not reserve swarm FIFO order.",
       );
     }
-    reservationPending = true;
+    swarmReservation = holdQueuedSwarmRun(childIdem);
+    if (!swarmReservation) {
+      return rejectSubagentSpawnRequest("error", "Collector FIFO reservation is no longer current");
+    }
+    // Reserve invocation order before worker reads can finish out of order.
+    // Transfer this exact hold to the spawn owner only after requester capture succeeds.
+    let transferred = false;
+    try {
+      const rejection = await captureRequesterSession();
+      if (rejection) {
+        return rejection;
+      }
+      transferred = true;
+    } finally {
+      if (!transferred) {
+        swarmReservation.withdraw();
+        await swarmReservation.release();
+      }
+    }
   }
   return {
     ok: true as const,
@@ -315,7 +347,7 @@ export function resolveSubagentSpawnRequest(
         schedulerGroupKey: swarmSchedulerGroupKey,
         launchReplayKey: swarmLaunchReplayKey,
         soleImplicitMember,
-        reservationPending,
+        reservation: swarmReservation,
       },
       admission: {
         resolve: resolveAdmission,

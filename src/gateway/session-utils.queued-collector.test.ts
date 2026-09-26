@@ -14,6 +14,8 @@ import {
   releaseSubagentRun,
   releaseSubagentRunKillClaim,
 } from "../agents/subagents/registry/subagent-registry.test-helpers.js";
+import { spawnSubagentDirect } from "../agents/subagents/spawn/subagent-spawn.js";
+import * as spawnRuntime from "../agents/subagents/spawn/subagent-spawn.runtime.js";
 import {
   activateSwarmRun,
   holdQueuedSwarmRun,
@@ -23,8 +25,10 @@ import {
 } from "../agents/subagents/swarm/swarm-scheduler.js";
 import { testing as schedulerTesting } from "../agents/subagents/swarm/swarm-scheduler.test-support.js";
 import { loadTranscriptEvents, replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import { onAgentEvent } from "../infra/agent-events.js";
 import { clearAgentRunContext } from "../infra/agent-run-registry.js";
 import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { handleChatAbortRequest } from "./server-methods/chat-abort-handler.js";
 import { chatHistoryHandlers } from "./server-methods/chat-history-handler.js";
 import { handleChatSend } from "./server-methods/chat-send-handler.js";
@@ -43,6 +47,7 @@ const {
   requestContext,
   operatorClient,
   listChildren,
+  spawnCollector,
   spawnCollectors,
   createQueuedReservation,
 } = useQueuedCollectorFixture();
@@ -84,6 +89,88 @@ async function expectUnstartedChildHistory(
 }
 
 describe("queued collector session projection", () => {
+  it("rejects an already-cancelled collector before starting spawn effects", async () => {
+    const effectsStarted = vi.fn();
+    await expect(
+      spawnSubagentDirect(
+        { task: "cancelled collector", collect: true, context: "isolated" },
+        {
+          agentSessionKey: parentKey,
+          requesterRunId: "parent-turn",
+          assertActive: () => {
+            throw new Error("requester already cancelled");
+          },
+          onSpawnEffectsStart: effectsStarted,
+        },
+      ),
+    ).resolves.toEqual({
+      status: "error",
+      error: "sessions_spawn could not read the requester session: requester already cancelled",
+    });
+    expect(effectsStarted).not.toHaveBeenCalled();
+    expect(launchedRunIds).toEqual([]);
+  });
+
+  it.each(["success", "failure", "cancellation"] as const)(
+    "preserves collector FIFO when the first requester read settles last: %s",
+    async (outcome) => {
+      const readRequester = spawnRuntime.resolveGatewaySessionStoreTargetInWorker;
+      const entered = createDeferredCore();
+      const resume = createDeferredCore();
+      const firstLaunch = createDeferredCore<string>();
+      const secondLaunch = createDeferredCore<string>();
+      const abort = new AbortController();
+      const unsubscribe = onAgentEvent((event) => {
+        if (event.stream === "lifecycle" && event.data.phase === "start") {
+          (launchedRunIds.length === 1 ? firstLaunch : secondLaunch).resolve(event.runId);
+        }
+      });
+      const read = vi
+        .spyOn(spawnRuntime, "resolveGatewaySessionStoreTargetInWorker")
+        .mockImplementationOnce(async (params) => {
+          const target = await readRequester(params);
+          entered.resolve();
+          await resume.promise;
+          return target;
+        });
+      const pendingFirst = spawnCollector("Collector A", undefined, () =>
+        abort.signal.throwIfAborted(),
+      );
+      try {
+        await entered.promise;
+        const second = await spawnCollector("Collector B");
+        expect(second.status).toBe("accepted");
+        if (outcome === "failure") {
+          resume.reject(new Error("requester read failed"));
+        } else {
+          if (outcome === "cancellation") {
+            abort.abort(new Error("requester read cancelled"));
+          }
+          resume.resolve();
+        }
+        const first = await pendingFirst;
+        if (outcome === "success") {
+          expect(first.status).toBe("accepted");
+          expect(await firstLaunch.promise).toBe(first.runId);
+          releaseSwarmRun(first.runId!);
+          expect(await secondLaunch.promise).toBe(second.runId);
+        } else {
+          expect(first).toEqual({
+            status: "error",
+            error: `sessions_spawn could not read the requester session: requester read ${outcome === "failure" ? "failed" : "cancelled"}`,
+          });
+          expect(await firstLaunch.promise).toBe(second.runId);
+          expect(launchedRunIds).toEqual([second.runId]);
+        }
+      } finally {
+        resume.resolve();
+        await pendingFirst;
+        read.mockRestore();
+        unsubscribe();
+      }
+    },
+  );
+
   it("lists both labeled collectors before the second launches without inventing its runtime", async () => {
     const context = requestContext();
     const broadcast = vi.fn();
