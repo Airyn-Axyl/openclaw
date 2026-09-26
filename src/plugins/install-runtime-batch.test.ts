@@ -62,7 +62,25 @@ function holdIndexRead() {
   return { entered, resume };
 }
 
-it.each(["runtime", "source", "record", "closed", "adopted", "loadpath", "rebound"])(
+function expectNoMainThreadIndexReads(reads: ReturnType<typeof observeMainThreadReads>) {
+  for (const call of reads.calls) {
+    expect(call.mock.calls.filter((args) => args.includes("plugins.installedIndex"))).toEqual([]);
+  }
+}
+
+const handoffFailures = [
+  "runtime",
+  "source",
+  "record",
+  "closed",
+  "closed-during-read",
+  "loadpath-during-read",
+  "adopted",
+  "loadpath",
+  "rebound",
+];
+
+it.each(handoffFailures)(
   "retains replaced source when the post-lease handoff loses %s ownership",
   async (failure) => {
     const root = dirs.make("plugin-batch-gap-");
@@ -70,6 +88,8 @@ it.each(["runtime", "source", "record", "closed", "adopted", "loadpath", "reboun
     const previousSource = path.join(root, "previous");
     await fs.mkdir(source);
     await fs.mkdir(previousSource);
+    const retainedFile = path.join(previousSource, "retained.txt");
+    await fs.writeFile(retainedFile, "Retain committed source bytes.\n");
     await fs.writeFile(path.join(source, "index.ts"), "export const value = 1;");
     await fs.writeFile(path.join(source, "package.json"), "{}");
     const env = {
@@ -117,6 +137,7 @@ it.each(["runtime", "source", "record", "closed", "adopted", "loadpath", "reboun
         } else if (failure === "rebound") {
           await fs.rename(previousSource, path.join(root, "retired-original"));
           await fs.mkdir(previousSource);
+          await fs.writeFile(retainedFile, "Retain committed source bytes.\n");
         } else if (failure === "closed") {
           batch.close();
         }
@@ -144,12 +165,43 @@ it.each(["runtime", "source", "record", "closed", "adopted", "loadpath", "reboun
         deferred.deferCleanup(cleanup, previousSource);
         await batch.prepare(lease);
       });
-      await expect(batch.finish(() => {})).rejects.toThrow(
+      const gate =
+        failure === "closed-during-read" || failure === "loadpath-during-read"
+          ? holdIndexRead()
+          : undefined;
+      const finishing = batch.finish(() => {});
+      const settlement = Promise.allSettled([finishing]);
+      if (gate) {
+        try {
+          await Promise.race([
+            gate.entered.promise,
+            finishing.then(() => {
+              throw new Error("Batch completed without awaiting its cleanup index read");
+            }),
+          ]);
+          expect(cleanup).not.toHaveBeenCalled();
+          if (failure === "closed-during-read") {
+            batch.close();
+          } else {
+            await fs.writeFile(
+              env.OPENCLAW_CONFIG_PATH,
+              JSON.stringify({ plugins: { load: { paths: [previousSource] } } }),
+            );
+          }
+        } finally {
+          gate.resume.resolve();
+          await settlement;
+        }
+      }
+      await expect(finishing).rejects.toThrow(
         failure === "runtime" ? "Runtime activation was not confirmed" : "source cleanup failed",
       );
       expect(reload).toHaveBeenCalledOnce();
       expect(cleanup).not.toHaveBeenCalled();
       await expect(fs.stat(previousSource)).resolves.toBeDefined();
+      await expect(fs.readFile(retainedFile, "utf8")).resolves.toBe(
+        "Retain committed source bytes.\n",
+      );
       expect(() => deferred.deferCleanup(cleanup, previousSource)).toThrow(
         "no longer accepts mutations",
       );
@@ -182,11 +234,7 @@ it("prepares the final persisted index off thread even after the lease cached an
     try {
       await batch.prepare(lease);
       // Lease verification stays native; the installed-index query must run in its worker.
-      for (const call of reads.calls) {
-        expect(call.mock.calls.filter((args) => args.includes("plugins.installedIndex"))).toEqual(
-          [],
-        );
-      }
+      expectNoMainThreadIndexReads(reads);
     } finally {
       reads.restore();
     }
@@ -369,12 +417,21 @@ it.each(["index", "deferred obligation"] as const)(
           captured.assertSourceCurrent,
         );
         deferred.deferCleanup(async (assertOwned) => {
-          assertOwned();
-          enteredCleanup.resolve();
-          await releaseCleanup.promise;
-          assertOwned();
-          await fs.rm(retired, { recursive: true });
-          order.push("deleted");
+          const reads = observeMainThreadReads();
+          try {
+            assertOwned();
+            expectNoMainThreadIndexReads(reads);
+            enteredCleanup.resolve();
+            await releaseCleanup.promise;
+            // The test inspects durable rows while paused; observe the effect guard separately.
+            reads.clear();
+            assertOwned();
+            expectNoMainThreadIndexReads(reads);
+            await fs.rm(retired, { recursive: true });
+            order.push("deleted");
+          } finally {
+            reads.restore();
+          }
         }, retired);
         await batch.prepare(lease);
       });
