@@ -314,7 +314,7 @@ it.each([
         if (mode === "metadata-refresh") {
           registerOpenClawAgentDatabase(
             { agentId: "other", path: b.path, env: state.env },
-            (receipt) => registration.recordCommitted(receipt),
+            { committed: (receipt) => registration.recordCommitted(receipt) },
           );
         }
         registration.finish();
