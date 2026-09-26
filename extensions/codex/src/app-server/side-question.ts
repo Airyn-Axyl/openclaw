@@ -896,6 +896,8 @@ export async function runCodexAppServerSideQuestion(
         }),
     );
     turnId = turnResponse.turn.id;
+    nativeHookRelay?.claimTurn?.(turnId);
+    await nativeHookRelay?.verifyPreToolUse?.(turnId);
     assertCurrent();
     nativeToolLifecycleProjector = new CodexNativeToolLifecycleProjector(
       { ...sideRunParams, agentId: sessionAgentId },

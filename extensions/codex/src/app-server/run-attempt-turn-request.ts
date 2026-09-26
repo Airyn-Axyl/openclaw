@@ -348,6 +348,8 @@ export async function prepareCodexAttemptTurnRequest(
         }),
       );
       acceptedTurnId = startedTurn.turn.id;
+      resourceState.nativeHookRelay?.claimTurn?.(acceptedTurnId);
+      await resourceState.nativeHookRelay?.verifyPreToolUse?.(acceptedTurnId);
       resources.nativeProcessAuthority?.bindTurn(turnClient, threadId, acceptedTurnId);
       assertTurnCurrent();
       resourceState.nativeSubagentMonitor?.bindTurn(acceptedTurnId, modelMapping);

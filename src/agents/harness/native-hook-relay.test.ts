@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import { request as httpRequest, Server } from "node:http";
-import { Socket } from "node:net";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough, Readable } from "node:stream";
@@ -15,7 +14,6 @@ import type { SessionEntry } from "../../config/sessions.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import { createAgentRuntimeApprovalAuthorityValidator } from "../../gateway/agent-runtime-approval-authority.js";
 import { mintAgentRuntimeIdentityToken } from "../../gateway/agent-runtime-identity-token.js";
-import { nativeHookRelayHandlers } from "../../gateway/server-methods/native-hook-relay.js";
 import { validateAgentRunDelegatedAuthority } from "../../infra/agent-run-registry.js";
 import {
   initializeGlobalHookRunner,
@@ -25,7 +23,6 @@ import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
 import { patchPluginSessionExtension } from "../../plugins/host-hook-state.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
-import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { splitShellArgs } from "../../utils/shell-argv.js";
 import {
@@ -868,8 +865,10 @@ describe("native hook relay registry", () => {
       },
     });
 
+    expect(callbackSuccessor).toBeUndefined();
+    expect(replacementUnregistered).not.toHaveBeenCalled();
+    first.unregister();
     expect(callbackSuccessor).toBeDefined();
-    expect(replacementUnregistered).toHaveBeenCalledOnce();
     expect(testing.getNativeHookRelayRegistrationForTests(relayId)?.runId).toBe(
       "run-callback-successor",
     );
@@ -883,14 +882,13 @@ describe("native hook relay registry", () => {
         rawPayload: { hook_event_name: "PostToolUse", tool_name: "Bash", tool_response: {} },
       }),
     ).resolves.toMatchObject({ exitCode: 0 });
-    first.unregister();
     callbackSuccessor?.unregister();
   });
 
   it("delivers old replacement callback when the successor signal is already aborted", async () => {
     const relayId = uniqueNativeHookRelayIdForTests("replacement-preaborted");
     const oldUnregistered = vi.fn();
-    registerOwnedNativeHookRelay({
+    const oldRelay = registerOwnedNativeHookRelay({
       provider: "codex",
       relayId,
       sessionId: "session-1",
@@ -902,6 +900,7 @@ describe("native hook relay registry", () => {
         onDispose: oldUnregistered,
       },
     });
+    await oldRelay.ready;
     const controller = new AbortController();
     controller.abort();
 
@@ -915,9 +914,9 @@ describe("native hook relay registry", () => {
       }),
     ).toThrow("native hook relay registration aborted");
 
-    expect(oldUnregistered).toHaveBeenCalledOnce();
-    expect(testing.getNativeHookRelayRegistrationForTests(relayId)).toBeUndefined();
-    expect(await testing.getNativeHookRelayBridgeRecordForTests(relayId)).toBeUndefined();
+    expect(oldUnregistered).not.toHaveBeenCalled();
+    expect(testing.getNativeHookRelayRegistrationForTests(relayId)?.runId).toBe("run-old");
+    expect(await testing.getNativeHookRelayBridgeRecordForTests(relayId)).toBeDefined();
   });
 
   it("cleans a partial retained relay when bridge setup throws", async () => {
@@ -1108,7 +1107,7 @@ describe("native hook relay registry", () => {
     replacement.unregister();
   });
 
-  it("invokes the successor when retirement expires before its listener publishes", async () => {
+  it("keeps the shared listener published while same-id siblings overlap", async () => {
     const first = registerOwnedNativeHookRelay({
       provider: "codex",
       relayId: uniqueNativeHookRelayIdForTests("replacement-publication"),
@@ -1116,162 +1115,87 @@ describe("native hook relay registry", () => {
       runId: "run-first",
       allowedEvents: ["post_tool_use"],
     });
-    await waitForNativeHookRelayBridgeRecord(first.relayId);
-    const connectionErrors: unknown[] = [];
-    // oxlint-disable-next-line typescript/unbound-method -- called below with the intercepted socket receiver.
-    const originalEmit = Socket.prototype.emit;
-    vi.spyOn(Socket.prototype, "emit").mockImplementation(function (this: Socket, event, ...args) {
-      if (event === "error") {
-        connectionErrors.push(args[0]);
-      }
-      return originalEmit.call(this, event, ...args);
+    const firstRecord = await waitForNativeHookRelayBridgeRecord(first.relayId);
+    const successor = registerNativeHookRelay({
+      provider: "codex",
+      relayId: first.relayId,
+      sessionId: "session-1",
+      runId: "run-successor",
+      allowedEvents: ["post_tool_use"],
     });
-    const remove = nativeHookRelayStore.deleteNativeHookRelayBridgeRecordIfOwned;
-    const removed = createDeferredCore();
-    vi.spyOn(nativeHookRelayStore, "deleteNativeHookRelayBridgeRecordIfOwned").mockImplementation(
-      async (params) => {
-        const result = await remove(params);
-        removed.resolve();
-        return result;
-      },
-    );
-    // oxlint-disable-next-line typescript/unbound-method -- replayed with the captured server receiver.
-    const originalListen = Server.prototype.listen;
-    let startSuccessor: (() => void) | undefined;
-    const listen = vi.spyOn(Server.prototype, "listen").mockImplementation(function (
-      this: Server,
-      ...args
-    ) {
-      startSuccessor = () => {
-        Reflect.apply(originalListen, this, args);
-      };
-      return this;
+    await successor.ready;
+    const overlappingRecord = await waitForNativeHookRelayBridgeRecord(first.relayId);
+    expect(overlappingRecord).toMatchObject({
+      hostname: firstRecord.hostname,
+      pid: firstRecord.pid,
+      port: firstRecord.port,
+      relayId: firstRecord.relayId,
+      token: firstRecord.token,
     });
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const successor = registerNativeHookRelay({
+
+    first.unregister();
+    await expect(
+      invokeNativeHookRelayBridge({
         provider: "codex",
-        relayId: first.relayId,
-        sessionId: "session-1",
-        runId: "run-successor",
-        allowedEvents: ["post_tool_use"],
-      });
-      // The grace begins after durable removal, while successor publication is held explicitly.
-      await removed.promise;
-      await vi.advanceTimersByTimeAsync(250);
-      await first.drain();
-      vi.useRealTimers();
-      const result = expect(
-        invokeNativeHookRelayBridge({
-          provider: "codex",
-          relayId: successor.relayId,
-          generation: successor.generation,
-          event: "post_tool_use",
-          timeoutMs: 2_000,
-          rawPayload: { hook_event_name: "PostToolUse", tool_name: "Bash", tool_response: {} },
-        }),
-      ).resolves.toMatchObject({ exitCode: 0 });
-      expect(startSuccessor).toBeTypeOf("function");
-      startSuccessor?.();
-      await result;
-      expect(connectionErrors).toEqual([]);
-      expect(getOnlyNativeHookRelayInvocation()).toMatchObject({ runId: "run-successor" });
-    } finally {
-      listen.mockRestore();
-      vi.useRealTimers();
-    }
+        relayId: successor.relayId,
+        generation: successor.generation,
+        event: "post_tool_use",
+        timeoutMs: 2_000,
+        rawPayload: { hook_event_name: "PostToolUse", tool_name: "Bash", tool_response: {} },
+      }),
+    ).resolves.toMatchObject({ exitCode: 0 });
+    expect(getOnlyNativeHookRelayInvocation()).toMatchObject({ runId: "run-successor" });
+    successor.unregister();
   });
 
-  it.each([
-    { event: "pre_tool_use", noop: false },
-    { event: "pre_tool_use", noop: true },
-    { event: "permission_request", noop: false },
-    { event: "post_tool_use", noop: false },
-  ] as const)(
-    "keeps stale CLI authority closed during delayed publication ($event, noop=$noop)",
-    async ({ event, noop }) => {
-      const first = registerNativeHookRelay({
-        provider: "codex",
-        relayId: uniqueNativeHookRelayIdForTests("replacement-cli"),
-        sessionId: "session-1",
-        runId: "run-first",
-        allowedEvents: [event],
-      });
-      await waitForNativeHookRelayBridgeRecord(first.relayId);
-      const command = buildNativeHookRelayCommand({
-        provider: "codex",
-        relayId: first.relayId,
-        generation: first.generation,
-        event,
-        ...(noop ? { preToolUseUnavailable: "noop" } : {}),
-        timeoutMs: 2_000,
-      });
-      const argv = splitShellArgs(command);
-      if (!argv) {
-        throw new Error("Expected generated relay command to parse");
-      }
-      // Hold successor startup, while keeping the retired listener and real
-      // read-only locator lookup intact across the CLI registration deadline.
-      const listen = vi.spyOn(Server.prototype, "listen").mockImplementation(function (
-        this: Server,
-      ) {
-        return this;
-      });
-      try {
-        registerNativeHookRelay({
-          provider: "codex",
-          relayId: first.relayId,
-          sessionId: "session-1",
-          runId: "run-successor",
-          allowedEvents: [event],
-        });
-        const callGateway = vi.fn(async (opts: { params?: unknown }): Promise<never> => {
-          let failure = "Gateway unexpectedly accepted the retired generation";
-          await nativeHookRelayHandlers["nativeHook.invoke"]!({
-            req: { type: "req", id: "replacement-cli", method: "nativeHook.invoke" },
-            params: requireRecord(opts.params, "gateway relay parameters"),
-            client: null,
-            isWebchatConnect: () => false,
-            respond: (ok, _result, error) => {
-              expect(ok).toBe(false);
-              failure = error?.message ?? failure;
-            },
-            context: {} as never,
-          });
-          throw new Error(failure);
-        });
-        const stdout = new PassThrough();
-        const stderr = new PassThrough();
-        await expect(
-          runNativeHookRelayCliFromArgv(argv, {
-            stdin: Readable.from([
-              JSON.stringify({
-                hook_event_name: "PreToolUse",
-                tool_name: "Bash",
-                tool_input: { command: "echo fixture" },
-              }),
-            ]),
-            stdout,
-            stderr,
-            callGateway,
+  it("keeps the original CLI generation live while a same-id sibling overlaps", async () => {
+    const first = registerNativeHookRelay({
+      provider: "codex",
+      relayId: uniqueNativeHookRelayIdForTests("overlapping-cli"),
+      sessionId: "session-1",
+      runId: "run-first",
+      allowedEvents: ["pre_tool_use"],
+    });
+    await first.ready;
+    const command = first.commandForEvent("pre_tool_use", { timeoutMs: 2_000 });
+    const argv = splitShellArgs(command);
+    if (!argv) {
+      throw new Error("Expected generated relay command to parse");
+    }
+    const sibling = registerNativeHookRelay({
+      provider: "codex",
+      relayId: first.relayId,
+      sessionId: "session-1",
+      runId: "run-sibling",
+      allowedEvents: ["pre_tool_use"],
+    });
+    await sibling.ready;
+    const callGateway = vi.fn(async (): Promise<never> => {
+      throw new Error("Gateway fallback must not run while the direct bridge is healthy");
+    });
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    await expect(
+      runNativeHookRelayCliFromArgv(argv, {
+        stdin: Readable.from([
+          JSON.stringify({
+            hook_event_name: "PreToolUse",
+            tool_name: "Bash",
+            tool_input: { command: "/bin/echo ok" },
           }),
-        ).resolves.toBe(0);
-        expect(callGateway).toHaveBeenCalledOnce();
-        expect(String(stderr.read())).toContain("native hook relay bridge stale registration");
-        const output = String(stdout.read() ?? "");
-        if (event === "pre_tool_use" && !noop) {
-          expect(JSON.parse(output).hookSpecificOutput.permissionDecision).toBe("deny");
-        } else if (event === "permission_request") {
-          expect(JSON.parse(output).hookSpecificOutput.decision.behavior).toBe("deny");
-        } else {
-          expect(output).toBe("");
-        }
-        expect(testing.getNativeHookRelayInvocationsForTests()).toEqual([]);
-      } finally {
-        listen.mockRestore();
-      }
-    },
-  );
+        ]),
+        stdout,
+        stderr,
+        callGateway,
+      }),
+    ).resolves.toBe(0);
+    expect(callGateway).not.toHaveBeenCalled();
+    expect(String(stderr.read() ?? "")).toBe("");
+    expect(String(stdout.read() ?? "")).toBe("");
+    expect(getOnlyNativeHookRelayInvocation()).toMatchObject({ runId: "run-first" });
+    first.unregister();
+    sibling.unregister();
+  });
 
   it("ignores stale exact-owner teardown after same-id replacement", async () => {
     const relayId = uniqueNativeHookRelayIdForTests("stale-owner-successor");
@@ -1503,7 +1427,7 @@ describe("native hook relay registry", () => {
     );
   });
 
-  it("allows callers to replace a relay at a stable id", async () => {
+  it("keeps same-id siblings live until their own owners release them", async () => {
     const first = registerNativeHookRelay({
       provider: "codex",
       relayId: "codex-stable-session",
@@ -1576,6 +1500,155 @@ describe("native hook relay registry", () => {
     expect(testing.getNativeHookRelayRegistrationForTests(first.relayId)).toBeUndefined();
   });
 
+  it("routes overlapping same-generation turns to their exact run owners", async () => {
+    const relayId = uniqueNativeHookRelayIdForTests("overlapping-turn-owners");
+    const first = registerNativeHookRelay({
+      provider: "codex",
+      relayId,
+      generation: "shared-generation",
+      sessionId: "session-1",
+      runId: "run-1",
+      allowedEvents: ["post_tool_use"],
+    });
+    const second = registerNativeHookRelay({
+      provider: "codex",
+      relayId,
+      generation: "shared-generation",
+      sessionId: "session-1",
+      runId: "run-2",
+      allowedEvents: ["post_tool_use"],
+    });
+    await Promise.all([first.ready, second.ready]);
+    first.claimTurn?.("turn-1");
+    second.claimTurn?.("turn-2");
+
+    for (const [turnId, toolUseId] of [
+      ["turn-1", "call-1"],
+      ["turn-2", "call-2"],
+    ] as const) {
+      await expect(
+        invokeNativeHookRelayBridge({
+          provider: "codex",
+          relayId,
+          generation: "shared-generation",
+          event: "post_tool_use",
+          timeoutMs: 2_000,
+          rawPayload: {
+            hook_event_name: "PostToolUse",
+            turn_id: turnId,
+            tool_name: "Bash",
+            tool_use_id: toolUseId,
+            tool_input: { command: "/bin/echo ok" },
+            tool_response: { output: "ok", exit_code: 0 },
+          },
+        }),
+      ).resolves.toEqual({ stdout: "", stderr: "", exitCode: 0 });
+    }
+
+    expect(testing.getNativeHookRelayInvocationsForTests()).toMatchObject([
+      { turnId: "turn-1", toolUseId: "call-1" },
+      { turnId: "turn-2", toolUseId: "call-2" },
+    ]);
+    first.unregister();
+    await expect(
+      invokeNativeHookRelayBridge({
+        provider: "codex",
+        relayId,
+        generation: "shared-generation",
+        event: "post_tool_use",
+        timeoutMs: 2_000,
+        rawPayload: {
+          hook_event_name: "PostToolUse",
+          turn_id: "turn-1",
+          tool_name: "Bash",
+          tool_use_id: "late-call-1",
+          tool_input: { command: "/bin/echo late" },
+          tool_response: { output: "late", exit_code: 0 },
+        },
+      }),
+    ).rejects.toThrow("native hook relay bridge stale registration");
+    second.unregister();
+  });
+
+  it("verifies harmless startup policy and keeps protected mutations denied", async () => {
+    const protectedPath = "/protected/ax3710-guard/index.js";
+    const beforeToolCall = vi.fn(async () => ({}));
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "before_tool_call", handler: beforeToolCall }]),
+    );
+    const relay = registerAgentRelay({
+      runId: "run-readiness",
+      allowedEvents: ["pre_tool_use"],
+    });
+    await relay.ready;
+    relay.claimTurn?.("turn-readiness");
+    await expect(relay.verifyPreToolUse?.("turn-readiness")).resolves.toBeUndefined();
+
+    for (const [toolUseId, command] of [
+      ["pwd-canary", "pwd"],
+      ["status-canary", "git status --short --branch"],
+      ["echo-canary", "/bin/echo ok"],
+    ] as const) {
+      await expect(
+        invokeNativeHookRelayBridge({
+          provider: "codex",
+          relayId: relay.relayId,
+          generation: relay.generation,
+          event: "pre_tool_use",
+          timeoutMs: 2_000,
+          rawPayload: {
+            hook_event_name: "PreToolUse",
+            turn_id: "turn-readiness",
+            tool_name: "Bash",
+            tool_use_id: toolUseId,
+            tool_input: { command },
+          },
+        }),
+      ).resolves.toEqual({ stdout: "", stderr: "", exitCode: 0 });
+    }
+
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        {
+          hookName: "before_tool_call",
+          handler: vi.fn(async () => ({
+            block: true,
+            blockReason: "protected enforcement infrastructure",
+          })),
+        },
+      ]),
+    );
+    const protectedRelay = registerAgentRelay({
+      runId: "run-protected-canary",
+      allowedEvents: ["pre_tool_use"],
+    });
+    await protectedRelay.ready;
+    protectedRelay.claimTurn?.("turn-protected-canary");
+    const denied = await invokeNativeHookRelayBridge({
+      provider: "codex",
+      relayId: protectedRelay.relayId,
+      generation: protectedRelay.generation,
+      event: "pre_tool_use",
+      timeoutMs: 2_000,
+      rawPayload: {
+        hook_event_name: "PreToolUse",
+        turn_id: "turn-protected-canary",
+        tool_name: "Bash",
+        tool_use_id: "protected-mutation-canary",
+        tool_input: { command: `/usr/bin/touch -r ${protectedPath} ${protectedPath}` },
+      },
+    });
+    expect(JSON.parse(denied.stdout)).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: "protected enforcement infrastructure",
+      },
+    });
+    protectedRelay.unregister();
+    relay.unregister();
+  });
+
   it("exposes registered relays through the direct hook bridge", async () => {
     const relay = registerNativeHookRelay({
       provider: "codex",
@@ -1606,7 +1679,7 @@ describe("native hook relay registry", () => {
     });
   });
 
-  it("rejects stale direct bridge requests after stable relay id replacement", async () => {
+  it("finishes an admitted direct bridge request while a same-id sibling registers", async () => {
     const first = registerNativeHookRelay({
       provider: "codex",
       relayId: "codex-stale-bridge-request",
@@ -1640,11 +1713,8 @@ describe("native hook relay registry", () => {
     });
     staleRequest.sendBody();
 
-    await expect(staleRequest.response).resolves.toMatchObject({
-      ok: false,
-      error: "native hook relay bridge stale registration",
-    });
-    expect(testing.getNativeHookRelayInvocationsForTests()).toStrictEqual([]);
+    await expect(staleRequest.response).resolves.toMatchObject({ ok: true });
+    expect(getOnlyNativeHookRelayInvocation()).toMatchObject({ runId: "run-1" });
 
     await expect(
       invokeNativeHookRelayBridge({
@@ -1662,7 +1732,7 @@ describe("native hook relay registry", () => {
     ).resolves.toEqual({ stdout: "", stderr: "", exitCode: 0 });
   });
 
-  it("rejects fresh connections to the retired locator during replacement", async () => {
+  it("keeps fresh connections to the shared locator routable during overlap", async () => {
     const first = registerNativeHookRelay({
       provider: "codex",
       relayId: uniqueNativeHookRelayIdForTests("retired-listener"),
@@ -1691,16 +1761,16 @@ describe("native hook relay registry", () => {
       staleRequest.sendBody();
       await expect(response).resolves.toEqual([
         undefined,
-        { ok: false, error: "native hook relay bridge stale registration" },
+        { ok: true, result: { stdout: "", stderr: "", exitCode: 0 } },
       ]);
-      expect(testing.getNativeHookRelayInvocationsForTests()).toStrictEqual([]);
+      expect(getOnlyNativeHookRelayInvocation()).toMatchObject({ runId: "run-1" });
     } finally {
       await vi.advanceTimersByTimeAsync(250);
       vi.useRealTimers();
     }
   });
 
-  it("rejects late stale direct bridge commands after stable relay id replacement", async () => {
+  it("keeps late original-generation commands routable during overlap", async () => {
     const first = registerNativeHookRelay({
       provider: "codex",
       relayId: "codex-late-stale-bridge-command",
@@ -1734,8 +1804,8 @@ describe("native hook relay registry", () => {
           tool_input: { command: "pnpm test" },
         },
       }),
-    ).rejects.toThrow("native hook relay bridge stale registration");
-    expect(testing.getNativeHookRelayInvocationsForTests()).toStrictEqual([]);
+    ).resolves.toEqual({ stdout: "", stderr: "", exitCode: 0 });
+    expect(getOnlyNativeHookRelayInvocation()).toMatchObject({ runId: "run-1" });
 
     await expect(
       invokeNativeHookRelayBridge({
@@ -1751,11 +1821,10 @@ describe("native hook relay registry", () => {
         },
       }),
     ).resolves.toEqual({ stdout: "", stderr: "", exitCode: 0 });
-    expect(getOnlyNativeHookRelayInvocation()).toMatchObject({
-      relayId: second.relayId,
-      runId: "run-2",
-      event: "pre_tool_use",
-    });
+    expect(testing.getNativeHookRelayInvocationsForTests()).toMatchObject([
+      { relayId: second.relayId, runId: "run-1", event: "pre_tool_use" },
+      { relayId: second.relayId, runId: "run-2", event: "pre_tool_use" },
+    ]);
   });
 
   it("treats stale direct bridge records as retryable during lookup", () => {
@@ -3468,6 +3537,7 @@ describe("native hook relay registry", () => {
     const relay = registerAgentRelay({
       channelId: "telegram",
     });
+    relay.claimTurn?.("turn-1");
 
     const response = await invokeNativeHookRelay({
       provider: "codex",

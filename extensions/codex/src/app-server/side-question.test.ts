@@ -1877,28 +1877,35 @@ describe("runCodexAppServerSideQuestion", () => {
     });
     getSharedCodexAppServerClientMock.mockResolvedValue(client);
 
-    await expect(
-      runCodexAppServerSideQuestion(
-        sideLoopRelayParams({
-          hostCapabilities: host.hostCapabilities,
-          sessionKey: "agent:main:session-1",
-          sessionEntry: {
-            sessionId: "session-1",
-            updatedAt: 1,
-            permissionMode: "guarded",
-            sessionRoot: "/tmp/workspace",
-          },
-          messageChannel: "discord",
-          messageProvider: "discord-voice",
-          currentChannelId: "discord:voice-room",
-          opts: { runId: "run-side-1" },
-        }),
-        { nativeHookRelay: { enabled: true, hookTimeoutSec: 9 } },
-      ).finally(() => {
-        host.closeHost();
-        host.closeAdmission();
+    const run = runCodexAppServerSideQuestion(
+      sideLoopRelayParams({
+        hostCapabilities: host.hostCapabilities,
+        sessionKey: "agent:main:session-1",
+        sessionEntry: {
+          sessionId: "session-1",
+          updatedAt: 1,
+          permissionMode: "guarded",
+          sessionRoot: "/tmp/workspace",
+        },
+        messageChannel: "discord",
+        messageProvider: "discord-voice",
+        currentChannelId: "discord:voice-room",
+        opts: { runId: "run-side-1" },
       }),
-    ).resolves.toEqual({ text: "Side answer." });
+      { nativeHookRelay: { enabled: true, hookTimeoutSec: 9 } },
+    ).finally(() => {
+      host.closeHost();
+      host.closeAdmission();
+    });
+    if (failed) {
+      await expect(run).rejects.toThrow("native hook relay readiness failed (direct bridge)");
+      expect(relayIdDuringFork).toBeDefined();
+      expect(
+        nativeHookRelayTesting.getNativeHookRelayRegistrationForTests(relayIdDuringFork!),
+      ).toBeUndefined();
+      return;
+    }
+    await expect(run).resolves.toEqual({ text: "Side answer." });
 
     const forkParams = mockCall(client.request)[1] as Record<string, unknown> | undefined;
     const config = forkParams?.config as Record<string, unknown> | undefined;
@@ -1924,7 +1931,7 @@ describe("runCodexAppServerSideQuestion", () => {
     const turnStartCall = client.request.mock.calls.find(([method]) => method === "turn/start");
     expect(turnStartCall?.[1]).not.toHaveProperty("config");
     expect(relayIdDuringFork).toBeDefined();
-    expect(beforeToolCall).toHaveBeenCalledTimes(1);
+    expect(beforeToolCall).toHaveBeenCalledTimes(2);
     expect(createOpenClawCodingToolsMock).toHaveBeenCalledWith(
       expect.objectContaining({ runId: "run-side-1" }),
     );

@@ -102,6 +102,10 @@ export type NativeHookRelayRegistration = {
 
 export type NativeHookRelayRegistrationHandle = NativeHookRelayRegistration & {
   generation?: string;
+  /** Binds a provider turn to this registration for overlapping-run routing. */
+  claimTurn?: (turnId: string) => void;
+  /** Proves the direct bridge and PreToolUse policy path without executing the tool. */
+  verifyPreToolUse?: (turnId: string) => Promise<void>;
   shouldRelayEvent: (event: NativeHookRelayEvent) => boolean;
   toolMatcherForEvent: (event: NativeHookRelayEvent) => readonly string[] | undefined;
   commandForEvent: (
@@ -208,6 +212,7 @@ export type ActiveNativeHookRelayRegistration = NativeHookRelayRegistration & {
   generation: string;
   preToolUseLoopDetection: boolean;
   preToolUseFailureProjections: Map<string, { promise: Promise<void>; settled: boolean }>;
+  claimedTurnIds: Set<string>;
 };
 
 export type ActiveNativeHookRelayRegistrationHandle = NativeHookRelayRegistrationHandle & {
@@ -281,6 +286,8 @@ export type NativeHookRelayBridgeRegistration = {
 
 export type NativeHookRelaySharedState = {
   relays: Map<string, ActiveNativeHookRelayRegistration>;
+  /** Live registrations grouped by stable relay id, oldest first. */
+  relayRegistrationsById?: Map<string, Set<ActiveNativeHookRelayRegistration>>;
   relayBridges: Map<string, NativeHookRelayBridgeRegistration>;
   pendingOperations: Set<Promise<unknown>>;
   invocations: NativeHookRelayInvocation[];

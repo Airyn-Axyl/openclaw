@@ -492,7 +492,7 @@ describe("native hook relay gateway method", () => {
     expectInvalidRequest(respond, "not found");
   });
 
-  it("rejects stale relay generations", async () => {
+  it("routes live overlapping generations and rejects unknown generations", async () => {
     const first = registerNativeHookRelay({
       provider: "codex",
       relayId: "relay-1",
@@ -516,8 +516,17 @@ describe("native hook relay gateway method", () => {
       rawPayload: POST_TOOL_USE_PAYLOAD,
     });
 
-    expectInvalidRequest(respond, "native hook relay bridge stale registration");
-    expect(testing.getNativeHookRelayInvocationsForTests()).toStrictEqual([]);
+    expect(respond).toHaveBeenCalledWith(true, { stdout: "", stderr: "", exitCode: 0 });
+    expect(testing.getNativeHookRelayInvocationsForTests()).toHaveLength(1);
+
+    const unknown = await invokeNativeHook({
+      provider: "codex",
+      relayId: first.relayId,
+      generation: "unknown-generation",
+      event: "post_tool_use",
+      rawPayload: POST_TOOL_USE_PAYLOAD,
+    });
+    expectInvalidRequest(unknown, "native hook relay bridge stale registration");
   });
 });
 
