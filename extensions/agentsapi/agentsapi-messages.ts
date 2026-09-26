@@ -23,6 +23,7 @@ import {
   joinTextParts,
   readTextParts,
 } from "./agentsapi-transcript.js";
+import { readAgentsApiFinalText } from "./agentsapi-text.js";
 import { aggregateAgentsApiUsage, makeAgentsApiZeroUsage } from "./agentsapi-usage.js";
 
 type AgentEvent = Parameters<NonNullable<AgentHarnessAttemptParamsV2["onAgentEvent"]>>[0];
@@ -323,22 +324,7 @@ class AgentsApiMessageProjection {
       this.reportTranscriptOrderingGap();
     }
     await this.endReasoning();
-    const completedMessages = items.filter(
-      (item) => item.type === "message" && item.role === "assistant" && item.status === "completed",
-    );
-    const finalItems = completedMessages.filter((item) => item.phase === "final_answer");
-    const visibleItems = finalItems.length
-      ? finalItems
-      : completedMessages.filter((item) => item.phase !== "commentary");
-    const text = visibleItems
-      .map(
-        (item) =>
-          item.content
-            ?.filter((part) => part.type === "output_text")
-            .map((part) => part.text ?? "")
-            .join("") ?? "",
-      )
-      .join("\n");
+    const text = readAgentsApiFinalText(items);
     const assistant = createAgentHarnessAssistantMessage(this.attribution(), text, {
       tokenUsage: this.tokenUsage,
       aborted: turn.status === "cancelled",
