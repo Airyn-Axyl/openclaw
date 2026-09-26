@@ -1,4 +1,4 @@
-// Routes Gateway and embedded events to the exact selected TUI conversation.
+// Compares TUI selections, returned metadata, and Gateway or embedded events.
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import {
   readSessionMessageIdentity,
@@ -6,6 +6,7 @@ import {
 } from "../../packages/gateway-client/src/session-projection.js";
 import {
   agentSessionKeysMatchByRequestKey,
+  normalizeAgentId,
   parseAgentSessionKey,
   toAgentStoreSessionKey,
 } from "../routing/session-key.js";
@@ -24,6 +25,21 @@ export function matchesTuiSessionSelection(
     state.currentAgentId === selection.agentId &&
     (state.currentSessionKey === "global") === (selection.sessionKey === "global") &&
     agentSessionKeysMatchByRequestKey(state.currentSessionKey, selection.sessionKey)
+  );
+}
+
+/** Returned metadata can name a legacy alias after its request receipt is accepted. */
+export function matchesTuiSessionMetadata(
+  state: Pick<TuiStateAccess, "currentAgentId" | "currentSessionKey">,
+  result: { key?: string },
+): boolean {
+  if (!result.key) {
+    return true;
+  }
+  const parsed = parseAgentSessionKey(result.key);
+  return (
+    (!parsed || normalizeAgentId(parsed.agentId) === state.currentAgentId) &&
+    agentSessionKeysMatchByRequestKey(state.currentSessionKey, result.key)
   );
 }
 

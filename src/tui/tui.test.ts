@@ -164,6 +164,21 @@ describe("resolveTuiShutdownHardExitMs", () => {
 });
 
 describe("resolveTuiSessionKey", () => {
+  it.each([
+    { scope: "per-sender" as const, raw: "global", expected: "agent:research:main" },
+    { scope: "global" as const, raw: "global", expected: "global" },
+    { scope: "per-sender" as const, raw: " GLOBAL ", expected: "agent:research:main" },
+    { scope: "global" as const, raw: " GLOBAL ", expected: "global" },
+  ])("selects the writable Home for $raw in $scope scope", ({ scope, raw, expected }) => {
+    expect(
+      resolveTuiSessionKey({
+        raw,
+        sessionScope: scope,
+        currentAgentId: "research",
+        sessionMainKey: "main",
+      }),
+    ).toBe(expected);
+  });
   it("uses global only as the default when scope is global", () => {
     expect(
       resolveTuiSessionKey({
@@ -395,7 +410,10 @@ describe("resolveInitialTuiAgentId", () => {
 });
 
 describe("resolveTuiSessionSelection", () => {
-  it("keeps a fixed-store bare key with its persisted owner", () => {
+  it.each([
+    { raw: "incident-42", expected: "incident-42" },
+    { raw: " GLOBAL ", expected: "agent:ops:main" },
+  ])("keeps the persisted owner when selecting fixed-store $raw", ({ raw, expected }) => {
     const cfg: OpenClawConfig = {
       session: { store: "/tmp/shared.sqlite" },
       agents: {
@@ -407,13 +425,13 @@ describe("resolveTuiSessionSelection", () => {
 
     expect(
       resolveTuiSessionSelection({
-        raw: "incident-42",
+        raw,
         cfg,
         sessionScope: "per-sender",
         currentAgentId: "research",
         sessionMainKey: "main",
       }),
-    ).toEqual({ key: "incident-42", agentId: "ops" });
+    ).toEqual({ key: expected, agentId: "ops" });
   });
 
   it("carries an explicit owner without reinterpreting the qualified global selector", () => {

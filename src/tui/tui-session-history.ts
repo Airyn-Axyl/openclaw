@@ -7,10 +7,11 @@ export async function readTuiSessionHistory(params: {
   client: Pick<TuiBackend, "loadHistory">;
   sessionKey: string;
   agentId: string;
+  homeSessionKey: string;
   limit: number;
   isCurrent: () => boolean;
 }): Promise<{ history: unknown; legacyHistoryKey?: string } | undefined> {
-  const { client, sessionKey, agentId, limit, isCurrent } = params;
+  const { client, sessionKey, agentId, homeSessionKey, limit, isCurrent } = params;
   const parsed = parseAgentSessionKey(sessionKey);
   let history = await client.loadHistory({
     sessionKey,
@@ -37,6 +38,6 @@ export async function readTuiSessionHistory(params: {
   if (!isCurrent()) {
     return undefined;
   }
-  history = await client.loadHistory({ sessionKey: "global", agentId, limit });
-  return isCurrent() ? { history, legacyHistoryKey: "global" } : undefined;
+  history = await client.loadHistory({ sessionKey: homeSessionKey, agentId, limit });
+  return isCurrent() ? { history, legacyHistoryKey: homeSessionKey } : undefined;
 }

@@ -73,7 +73,14 @@ describe("resolveTuiChatSubmitAdmission", () => {
       expected: { status: "allowed" },
     },
   ] as const)("resolves admission while $name", ({ expected, ...params }) => {
-    expect(resolveTuiChatSubmitAdmission(params)).toEqual(expected);
+    expect(
+      resolveTuiChatSubmitAdmission({
+        ...params,
+        historyLoaded: true,
+        transition: { active: null, boundary: null, epoch: 0 },
+        allowDuringPending: false,
+      }),
+    ).toEqual(expected);
   });
 });
 

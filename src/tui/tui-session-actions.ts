@@ -7,7 +7,6 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import { isAbortError } from "../infra/abort-signal.js";
 import type { AgentHistoryActivity } from "../infra/agent-activity-events.js";
 import {
-  agentSessionKeysMatchByRequestKey,
   normalizeAgentId,
   normalizeMainKey,
   parseAgentSessionKey,
@@ -22,7 +21,11 @@ import {
   isCommandMarkedMessage,
 } from "./tui-formatters.js";
 import { extractTuiImageSources } from "./tui-images.js";
-import { matchesTuiSessionSelection, readTuiSessionUserMessage } from "./tui-session-events.js";
+import {
+  matchesTuiSessionMetadata,
+  matchesTuiSessionSelection,
+  readTuiSessionUserMessage,
+} from "./tui-session-events.js";
 import { readTuiSessionHistory } from "./tui-session-history.js";
 import {
   sessionInfoUiEquals,
@@ -121,18 +124,6 @@ export function createSessionActions(context: SessionActionContext) {
     updateHeader();
     updateFooter();
     return true;
-  };
-
-  const isCurrentSessionMutation = (result: { key?: string }): boolean => {
-    if (!result.key) {
-      return true;
-    }
-    const parsed = parseAgentSessionKey(result.key);
-    // Returned metadata may use a legacy alias; explicit selection receipts stay distinct.
-    return (
-      (!parsed || normalizeAgentId(parsed.agentId) === state.currentAgentId) &&
-      agentSessionKeysMatchByRequestKey(state.currentSessionKey, result.key)
-    );
   };
 
   const applyAgentsResult = (result: TuiAgentsList) => {
@@ -360,7 +351,7 @@ export function createSessionActions(context: SessionActionContext) {
         return;
       }
       const entry = result.session;
-      if (entry && (!entry.key || !isCurrentSessionMutation(entry))) {
+      if (entry && (!entry.key || !matchesTuiSessionMetadata(state, entry))) {
         return;
       }
       if (entry?.key && entry.key !== state.currentSessionKey) {
@@ -389,7 +380,7 @@ export function createSessionActions(context: SessionActionContext) {
   const applySessionInfoFromPatch = (
     result?: SessionsPatchResult | TuiSessionMutationResult | null,
   ) => {
-    if (!result?.entry || !isCurrentSessionMutation(result)) {
+    if (!result?.entry || !matchesTuiSessionMetadata(state, result)) {
       return;
     }
     if (result.key && result.key !== state.currentSessionKey) {
@@ -459,6 +450,7 @@ export function createSessionActions(context: SessionActionContext) {
         client,
         sessionKey: selection.sessionKey,
         agentId: selection.agentId,
+        homeSessionKey: resolveSessionSelection(undefined, selection.agentId).key,
         limit: opts.historyLimit ?? 200,
         isCurrent: isCurrentLoad,
       });
@@ -658,6 +650,12 @@ export function createSessionActions(context: SessionActionContext) {
   };
 
   const abortActive = async (params?: { preferActive?: boolean }) => {
+    const admission = submit.resolveTuiSessionActionAdmission(state);
+    if (admission.status === "blocked") {
+      chatLog.addSystem(submit.tuiSessionActionBlockedMessage(admission, opts.local === true));
+      tui.requestRender();
+      return;
+    }
     if (
       opts.local === true &&
       state.activityStatus === "finishing context" &&

@@ -1,11 +1,13 @@
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import type { TuiBackend } from "./tui-backend.js";
 import { createTuiCommandHandlersHarness } from "./tui-command-handlers-test-support.js";
 import {
   createBaseState,
   createTestSessionActions,
   makeTuiBackend,
 } from "./tui-session-actions-test-support.js";
+import { createEditorSubmitHandler, createSubmitBurstCoalescer } from "./tui-submit.js";
 
 const key = "agent:research:global";
 const stateFor = () => createBaseState({ currentAgentId: "research", currentSessionKey: key });
@@ -98,28 +100,35 @@ it("selects a qualified global row from an already loaded bare-global conversati
   expect(loadHistory).toHaveBeenCalledOnce();
 });
 
-it("retains the shipped qualified-global Home alias after an empty exact read", async () => {
-  const state = stateFor();
-  const loadHistory = vi
-    .fn()
-    .mockResolvedValueOnce({ messages: [] })
-    .mockResolvedValueOnce({ messages: [], sessionId: "legacy-home" });
-  const actions = createTestSessionActions({
-    state,
-    client: makeTuiBackend({
-      loadHistory,
-      describeSession: async () => ({ session: { key: "global", sessionId: "legacy-home" } }),
-    }),
-  });
-  await expect(actions.loadHistory()).resolves.toMatchObject({ loaded: true });
-  expect(loadHistory).toHaveBeenNthCalledWith(2, {
-    sessionKey: "global",
-    agentId: "research",
-    limit: 200,
-  });
-  expect(state.currentSessionKey).toBe("global");
-  expect(state.currentSessionId).toBe("legacy-home");
-});
+it.each(["agent:research:main", "global"])(
+  "resolves the missing qualified-global alias to Home %s",
+  async (homeKey) => {
+    const state = stateFor();
+    const loadHistory = vi
+      .fn()
+      .mockResolvedValueOnce({ messages: [] })
+      .mockResolvedValueOnce({ messages: [], sessionId: "legacy-home" });
+    const actions = createTestSessionActions({
+      state,
+      client: makeTuiBackend({
+        loadHistory,
+        describeSession: async () => ({ session: { key: homeKey, sessionId: "legacy-home" } }),
+      }),
+      resolveSessionSelection: (raw, agentId) => ({
+        key: raw ?? homeKey,
+        agentId: agentId ?? "research",
+      }),
+    });
+    await expect(actions.loadHistory()).resolves.toMatchObject({ loaded: true });
+    expect(loadHistory).toHaveBeenNthCalledWith(2, {
+      sessionKey: homeKey,
+      agentId: "research",
+      limit: 200,
+    });
+    expect(state.currentSessionKey).toBe(homeKey);
+    expect(state.currentSessionId).toBe("legacy-home");
+  },
+);
 
 it.each([
   { name: "empty existing row", history: { messages: [], sessionId: "literal-row" } },
@@ -186,4 +195,229 @@ it("does not adopt Home after another session is selected during the legacy look
   await expect(pending).resolves.toEqual({ loaded: false });
   expect(state.currentSessionKey).toBe("agent:research:notes");
   expect(state.currentSessionId).toBe("new-choice");
+});
+
+it.each(
+  ["global", key].flatMap((storedKey) => [
+    { storedKey, coalesced: false },
+    { storedKey, coalesced: true },
+  ]),
+)(
+  "keeps a submit editable until selection resolves to $storedKey (coalesced=$coalesced)",
+  async ({ storedKey, coalesced }) => {
+    const entered = createDeferred();
+    const exact = createDeferred<unknown>();
+    const pendingCommands: Promise<void>[] = [];
+    const pendingMessages: Promise<void>[] = [];
+    const sendChat = vi.fn(async (_params: Parameters<TuiBackend["sendChat"]>[0]) => ({
+      runId: "submitted",
+      status: "accepted",
+    }));
+    const commands = createTuiCommandHandlersHarness({
+      currentAgentId: "research",
+      currentSessionKey: "agent:research:notes",
+      sendChat,
+      setSession: vi.fn((raw, agentId) => actions.setSession(raw, agentId)),
+    });
+    const state = Object.assign(
+      commands.state,
+      createBaseState({
+        currentAgentId: "research",
+        currentSessionKey: "agent:research:notes",
+        historyLoaded: true,
+        isConnected: true,
+      }),
+    );
+    const actions = createTestSessionActions({
+      state,
+      client: makeTuiBackend({
+        loadHistory: async ({ sessionKey }) => {
+          if (sessionKey === key) {
+            entered.resolve();
+            return exact.promise;
+          }
+          return {
+            messages: [],
+            sessionId: "selected-conversation",
+            sessionInfo: { key: "global", sessionId: "selected-conversation" },
+          };
+        },
+      }),
+      resolveSessionSelection: (raw = "global") => ({ key: raw, agentId: "research" }),
+    });
+    let editorText = "";
+    const addToHistory = vi.fn();
+    const submit = createEditorSubmitHandler({
+      editor: {
+        getText: () => editorText,
+        getExpandedText: () => editorText,
+        setText: (text) => {
+          editorText = text;
+        },
+        addToHistory,
+      },
+      handleCommand: (text) => {
+        const work = commands.handleCommand(text);
+        pendingCommands.push(work);
+        return work;
+      },
+      sendMessage: (text) => {
+        const work = commands.sendMessage(text);
+        pendingMessages.push(work);
+        return work;
+      },
+      handleBangLine: vi.fn(),
+      onSubmitError: vi.fn(),
+      admitMessage: commands.resolveMessageAdmission,
+      onBlockedMessageSubmit: commands.reportBlockedMessageSubmit,
+    });
+    const releaseExact = () =>
+      exact.resolve(
+        storedKey === key
+          ? {
+              messages: [],
+              sessionId: "selected-conversation",
+              sessionInfo: { key, sessionId: "selected-conversation" },
+            }
+          : { messages: [] },
+      );
+    if (coalesced) {
+      vi.useFakeTimers();
+    }
+    const bufferedSubmit = createSubmitBurstCoalescer({
+      submit,
+      captureSnapshot: commands.captureMessageAdmission,
+      enabled: true,
+      burstWindowMs: 50,
+    });
+    submit(`/session ${key}`);
+    await entered.promise;
+    try {
+      if (coalesced) {
+        bufferedSubmit("Immediate message");
+        releaseExact();
+        await Promise.all(pendingCommands);
+        vi.advanceTimersByTime(50);
+      } else {
+        submit("Immediate message");
+      }
+      expect(sendChat).not.toHaveBeenCalled();
+      expect(editorText).toBe("Immediate message");
+      expect(addToHistory).not.toHaveBeenCalledWith("Immediate message");
+      releaseExact();
+      await Promise.all(pendingCommands);
+      editorText = "";
+      submit("Immediate message");
+      await Promise.all(pendingMessages);
+      expect(sendChat).toHaveBeenCalledOnce();
+      expect(sendChat.mock.calls[0]?.[0]).toMatchObject({
+        sessionKey: storedKey,
+        sessionId: "selected-conversation",
+        message: "Immediate message",
+        ...(storedKey === "global" ? { agentId: "research" } : {}),
+      });
+    } finally {
+      exact.resolve({ messages: [] });
+      bufferedSubmit.dispose();
+      vi.useRealTimers();
+      await Promise.all([...pendingCommands, ...pendingMessages]);
+    }
+  },
+);
+
+it.each([
+  { command: "/verbose full", backend: "patchSession" },
+  { command: "/btw side question", backend: "sendChat" },
+  { command: "/new", backend: "createSession" },
+  { command: "/reset", backend: "resetSession" },
+  { command: "/goal set finish the task", backend: "runGoalCommand" },
+  { command: "/usage cost", backend: "runUsageCostCommand" },
+] as const)(
+  "rejects $command while selected history is unresolved",
+  async ({ command, backend }) => {
+    const commands = createTuiCommandHandlersHarness({
+      currentAgentId: "research",
+      currentSessionKey: key,
+      historyLoaded: false,
+      opts: { local: true },
+    });
+    await commands.handleCommand(command);
+    expect(commands.client[backend]).not.toHaveBeenCalled();
+    expect(commands.addSystem).toHaveBeenCalledWith(
+      "session history not ready — wait or retry /session",
+    );
+  },
+);
+
+it("rejects direct Escape abort while selected history is unresolved", async () => {
+  const abortChat = vi.fn(async () => ({ ok: true, aborted: false, runIds: [] }));
+  const actions = createTestSessionActions({
+    state: stateFor(),
+    client: makeTuiBackend({ abortChat }),
+  });
+  await actions.abortActive({ preferActive: true });
+  expect(abortChat).not.toHaveBeenCalled();
+});
+
+it("keeps a failed selection blocked and lets /session retry it", async () => {
+  const commands = createTuiCommandHandlersHarness({
+    currentAgentId: "research",
+    currentSessionKey: key,
+    setSession: vi.fn((raw, agentId) => actions.setSession(raw, agentId)),
+  });
+  const state = Object.assign(commands.state, stateFor());
+  const loadHistory = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("history unavailable"))
+    .mockResolvedValueOnce({
+      messages: [],
+      sessionId: "selected",
+      sessionInfo: { key, sessionId: "selected" },
+    });
+  const actions = createTestSessionActions({
+    state,
+    client: makeTuiBackend({ loadHistory }),
+    resolveSessionSelection: (raw = key) => ({ key: raw, agentId: "research" }),
+  });
+  await actions.loadHistory();
+  await commands.sendMessage("do not send after failed history");
+  expect(commands.sendChat).not.toHaveBeenCalled();
+  expect(state.historyLoaded).toBe(false);
+  await commands.handleCommand(`/session ${key}`);
+  await commands.sendMessage("send after retry");
+  expect(commands.sendChat).toHaveBeenCalledOnce();
+  expect(state.historyLoaded).toBe(true);
+});
+
+it("does not block a resolved conversation during an ordinary history refresh", async () => {
+  const history = createDeferred<unknown>();
+  const commands = createTuiCommandHandlersHarness({
+    currentAgentId: "research",
+    currentSessionKey: key,
+  });
+  const state = Object.assign(
+    commands.state,
+    createBaseState({
+      currentAgentId: "research",
+      currentSessionKey: key,
+      currentSessionId: "selected",
+      historyLoaded: true,
+    }),
+  );
+  const actions = createTestSessionActions({
+    state,
+    client: makeTuiBackend({ loadHistory: () => history.promise }),
+  });
+  const refreshing = actions.loadHistory();
+  try {
+    await commands.sendMessage("send during refresh");
+    expect(commands.sendChat).toHaveBeenCalledOnce();
+  } finally {
+    history.resolve({
+      messages: [],
+      sessionId: "selected",
+      sessionInfo: { key, sessionId: "selected" },
+    });
+    await refreshing;
+  }
 });
