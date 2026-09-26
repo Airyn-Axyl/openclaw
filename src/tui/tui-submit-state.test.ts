@@ -4,11 +4,11 @@ import {
   beginPendingSubmit,
   clearPendingSubmit,
   clearPendingSubmitDraft,
-  disconnectedTuiChatSubmitMessage,
   getPendingSubmitAcceptedRunId,
   getPendingSubmitDraft,
   reconcilePendingSubmitHistory,
   resolveTuiChatSubmitAdmission,
+  tuiSessionActionBlockedMessage,
   type TuiPendingSubmit,
 } from "./tui-submit-state.js";
 
@@ -174,13 +174,13 @@ describe("pending submit transitions", () => {
   });
 });
 
-describe("disconnectedTuiChatSubmitMessage", () => {
+describe("tuiSessionActionBlockedMessage", () => {
   it("uses the connection message for the selected runtime", () => {
-    expect(disconnectedTuiChatSubmitMessage(false)).toBe(
-      "not connected to gateway — message not sent",
-    );
-    expect(disconnectedTuiChatSubmitMessage(true)).toBe(
-      "local runtime not ready — message not sent",
-    );
+    expect(
+      tuiSessionActionBlockedMessage({ status: "blocked", reason: "disconnected" }, false),
+    ).toBe("not connected to gateway — message not sent");
+    expect(
+      tuiSessionActionBlockedMessage({ status: "blocked", reason: "disconnected" }, true),
+    ).toBe("local runtime not ready — message not sent");
   });
 });

@@ -164,7 +164,7 @@ export function resolveTuiChatSubmitAdmission(params: {
     : { status: "allowed" };
 }
 
-export function disconnectedTuiChatSubmitMessage(local: boolean): string {
+function disconnectedTuiChatSubmitMessage(local: boolean): string {
   return local
     ? "local runtime not ready — message not sent"
     : "not connected to gateway — message not sent";
