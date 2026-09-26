@@ -38,8 +38,8 @@ describe("Signal forwarded system-agent approvals", () => {
       const writes: Array<{ namespace: string; key: string; value: unknown }> = [];
       const runtime = createPluginRuntimeMock({
         state: {
-          openKeyedStore: <T>(options: OpenAsyncKeyedStoreOptions) => ({
-            register: async (key: string, value: T) => {
+          openKeyedStore: (options: OpenAsyncKeyedStoreOptions) => ({
+            register: async (key: string, value: unknown) => {
               writes.push({ namespace: options.namespace, key, value });
             },
             registerIfAbsent: async () => false,
