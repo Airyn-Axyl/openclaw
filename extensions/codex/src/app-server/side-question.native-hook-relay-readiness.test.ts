@@ -30,7 +30,7 @@ describe("runCodexAppServerSideQuestion native relay readiness", () => {
   useSideQuestionTestSetup();
 
   it("fails closed when the direct listener cannot start", async () => {
-    const listen = Server.prototype.listen;
+    const listen: Server["listen"] = Reflect.get(Server.prototype, "listen");
     vi.spyOn(Server.prototype, "listen").mockImplementation(function (
       this: Server,
       ...args: Parameters<Server["listen"]>
