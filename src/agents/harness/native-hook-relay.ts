@@ -32,6 +32,7 @@ import {
 } from "./native-hook-relay-events.js";
 import {
   canAcceptNativeHookRelayGenerationMismatch,
+  claimAndVerifyRelayTurn,
   claimNativeHookRelayTurn,
   ensureNativeHookRelayTurnClaims,
   isLiveNativeHookRelayRegistration,
@@ -359,6 +360,8 @@ function registerNativeHookRelayInternal(
               claimantRunId: sibling.runId,
             }),
         }),
+      claimAndVerifyTurn: (turnId, assertCurrent) =>
+        claimAndVerifyRelayTurn(handle, turnId, assertCurrent),
       verifyPreToolUse: async (turnIdInput) => {
         if (!allowedEvents.includes("pre_tool_use")) {
           return;

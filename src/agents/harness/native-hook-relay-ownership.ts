@@ -5,6 +5,7 @@ import {
 } from "./native-hook-relay-state.js";
 import type {
   ActiveNativeHookRelayRegistration,
+  NativeHookRelayRegistrationHandle,
   NativeHookRelayRegistration,
   RelayLifetime,
 } from "./native-hook-relay-types.js";
@@ -12,6 +13,16 @@ import { isJsonObject } from "./native-hook-relay-utils.js";
 
 const MAX_NATIVE_HOOK_RELAY_TURN_CLAIMS = 32;
 const { relays } = nativeHookRelayState;
+
+export async function claimAndVerifyRelayTurn(
+  handle: Pick<NativeHookRelayRegistrationHandle, "claimTurn" | "verifyPreToolUse">,
+  turnId: string,
+  assertCurrent?: () => void,
+): Promise<void> {
+  handle.claimTurn?.(turnId);
+  await handle.verifyPreToolUse?.(turnId);
+  assertCurrent?.();
+}
 
 export function normalizeNativeHookRelayKey(
   value: string | undefined,

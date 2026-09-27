@@ -43,6 +43,7 @@ describe("native hook execution admission", () => {
       },
     });
     const accepted = vi.fn();
+    relay.claimTurn?.("native-turn");
     const invocation = invokeNativeHookRelay({
       provider: "codex",
       relayId: relay.relayId,
@@ -91,6 +92,7 @@ describe("native hook execution admission", () => {
         tool_name: "Bash",
         tool_input: { command: "true" },
       };
+      relay.claimTurn?.("native-turn");
       await expect(
         invokeNativeHookRelay({
           provider: "codex",

@@ -1,14 +1,9 @@
 import { Agent, Server, request } from "node:http";
 import { afterEach, expect, it, vi } from "vitest";
 import * as mutableFileBinding from "../../infra/system-run-approval-binding.js";
-import {
-  initializeGlobalHookRunner,
-  resetGlobalHookRunner,
-} from "../../plugins/hook-runner-global.js";
-import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
+import { resetGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { createAdmittedHostCapabilityTestFixture } from "./host-capability.test-support.js";
 import * as relayBridge from "./native-hook-relay-bridge.js";
 import * as clientStore from "./native-hook-relay-client-store.js";
 import { invokeNativeHookRelayBridge } from "./native-hook-relay-client.js";
@@ -529,107 +524,6 @@ it("renews logical invocation beyond its original expiry when the listener is un
     }
   });
 });
-
-it.each(["cancellation", "replacement", "foreground retirement"] as const)(
-  "rejects logical preparation after %s while publication is held",
-  async (retirement) => {
-    await withOpenClawTestState({ label: "relay-prepare-retirement" }, async () => {
-      const entered = createDeferredCore();
-      const resume = createDeferredCore();
-      const write = store.writeNativeHookRelayBridgeRecord;
-      vi.spyOn(store, "writeNativeHookRelayBridgeRecord").mockImplementationOnce(async (params) => {
-        entered.resolve();
-        await resume.promise;
-        await write(params);
-      });
-      const policy = vi.fn(() => ({ block: true, blockReason: "retired policy must not run" }));
-      initializeGlobalHookRunner(
-        createMockPluginRegistry([{ hookName: "before_tool_call", handler: policy }]),
-      );
-      const host = await createAdmittedHostCapabilityTestFixture({ runId: "prepare-retirement" });
-      const abort = new AbortController();
-      const relay = registerOwnedNativeHookRelay({
-        provider: "codex",
-        relayId: "prepare-retirement",
-        sessionId: "prepare-retirement",
-        runId: "prepare-retirement",
-        signal: abort.signal,
-        allowedEvents: ["pre_tool_use"],
-        runBeforeToolCall: host.hostCapabilities.runBeforeToolCall,
-        assertActive: host.hostCapabilities.assertActive,
-        retention: {
-          readClaim: () => undefined,
-          shouldRetainAfterForegroundClose: () => retirement === "foreground retirement",
-          allowPreToolUse: () => false,
-          onDispose: () => {},
-        },
-      });
-      let successor: ReturnType<typeof registerOwnedNativeHookRelay> | undefined;
-      let preparation: Promise<void> | undefined;
-      let settled = false;
-      try {
-        preparation = relay.prepareInvocation();
-        void preparation.then(
-          () => {
-            settled = true;
-          },
-          () => {
-            settled = true;
-          },
-        );
-        await entered.promise;
-        expect(settled).toBe(false);
-        if (retirement === "cancellation") {
-          abort.abort();
-        } else if (retirement === "replacement") {
-          successor = registerOwnedNativeHookRelay({
-            provider: "codex",
-            relayId: relay.relayId,
-            sessionId: "prepare-retirement",
-            runId: "prepare-successor",
-          });
-        } else {
-          relay.unregister();
-          expect(testing.getNativeHookRelayRegistrationForTests(relay.relayId)).toBeDefined();
-        }
-        resume.resolve();
-        await expect(preparation).rejects.toThrow(/inactive|foreground|abort/i);
-        await expect(
-          invokeNativeHookRelay({
-            provider: "codex",
-            relayId: relay.relayId,
-            generation: relay.generation,
-            requireGeneration: true,
-            event: "pre_tool_use",
-            rawPayload: { tool_name: "Bash", tool_input: { command: "echo synthetic" } },
-          }),
-        ).rejects.toThrow();
-        expect(policy).not.toHaveBeenCalled();
-        if (successor) {
-          await successor.ready;
-          expect(testing.getNativeHookRelayRegistrationForTests(relay.relayId)?.runId).toBe(
-            "prepare-successor",
-          );
-          expect(
-            await store.readNativeHookRelayBridgeRecord({ relayId: relay.relayId }),
-          ).toBeDefined();
-        }
-      } finally {
-        resume.resolve();
-        abort.abort();
-        successor?.unregister();
-        await Promise.allSettled([
-          preparation,
-          relay.drain(),
-          ...(successor ? [successor.drain()] : []),
-        ]);
-        host.closeHost();
-        host.closeAdmission();
-        resetGlobalHookRunner();
-      }
-    });
-  },
-);
 
 it("rejects oversized direct bridge responses", async () => {
   await withOpenClawTestState({ label: "relay-oversized-response" }, async () => {

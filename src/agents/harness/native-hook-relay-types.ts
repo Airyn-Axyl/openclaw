@@ -104,6 +104,8 @@ export type NativeHookRelayRegistrationHandle = NativeHookRelayRegistration & {
   generation?: string;
   /** Binds a provider turn to this registration for overlapping-run routing. */
   claimTurn?: (turnId: string) => void;
+  /** Claims a provider turn, proves its policy path, then checks caller ownership. */
+  claimAndVerifyTurn: (turnId: string, assertCurrent?: () => void) => Promise<void>;
   /** Proves the direct bridge and PreToolUse policy path without executing the tool. */
   verifyPreToolUse?: (turnId: string) => Promise<void>;
   shouldRelayEvent: (event: NativeHookRelayEvent) => boolean;
@@ -217,11 +219,11 @@ export type ActiveNativeHookRelayRegistration = NativeHookRelayRegistration & {
 
 export type ActiveNativeHookRelayRegistrationHandle = NativeHookRelayRegistrationHandle & {
   generation: string;
+  /** Strict policy preparation and direct publication result. */
+  ready: Promise<void>;
 };
 
 export type OwnedNativeHookRelayRegistrationHandle = ActiveNativeHookRelayRegistrationHandle & {
-  /** Strict policy preparation and direct publication result. */
-  ready: Promise<void>;
   /** Requires current foreground authority; direct publication may use the Gateway fallback. */
   prepareInvocation: () => Promise<void>;
   /** Joins accepted policy, publication, renewal and cleanup without retiring retained children. */

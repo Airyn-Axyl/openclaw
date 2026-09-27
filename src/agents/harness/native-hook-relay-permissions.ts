@@ -410,6 +410,7 @@ function nativeHookRelayPermissionAllowAlwaysKey(params: {
     .update(
       JSON.stringify([
         params.registration.relayId,
+        params.registration.runId,
         params.request.provider,
         params.request.agentId,
         params.request.sessionKey ?? params.request.sessionId,

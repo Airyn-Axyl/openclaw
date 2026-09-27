@@ -36,11 +36,11 @@ import {
 } from "./native-hook-relay-utils.js";
 
 const MAX_NATIVE_HOOK_BRIDGE_BODY_BYTES = 5_000_000;
+const NATIVE_HOOK_RELAY_BRIDGE_CLOSE_GRACE_MS = 1_000;
 const log = createSubsystemLogger("agents/harness/native-hook-relay");
 
 export {
   isRetryableNativeHookRelayBridgeLookupError,
-  NATIVE_HOOK_BRIDGE_REPLACEMENT_RECORD_GRACE_MS,
   NATIVE_HOOK_RELAY_BRIDGE_STALE_REGISTRATION_ERROR,
 } from "./native-hook-relay-client.js";
 
@@ -296,13 +296,19 @@ export function unregisterNativeHookRelayBridge(
           });
         }
         await new Promise<void>((resolve, reject) => {
+          const forceClose = setTimeout(
+            () => bridge.server.closeAllConnections(),
+            NATIVE_HOOK_RELAY_BRIDGE_CLOSE_GRACE_MS,
+          );
           bridge.server.close((error?: Error) => {
+            clearTimeout(forceClose);
             if (error && !hasErrnoCode(error, "ERR_SERVER_NOT_RUNNING")) {
               reject(error);
             } else {
               resolve();
             }
           });
+          bridge.server.closeIdleConnections();
         });
       }
     });
