@@ -1,4 +1,6 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   initializeGlobalHookRunner,
@@ -17,6 +19,8 @@ import {
   registerOwnedNativeHookRelay,
   testing,
 } from "./native-hook-relay.js";
+
+const execFileAsync = promisify(execFile);
 
 function registerAgentRelay(
   overrides: Partial<Parameters<typeof registerNativeHookRelay>[0]> = {},
@@ -43,7 +47,7 @@ describe("native hook relay overlapping owners", () => {
   it("proves overlap recovery and rejects released ownership before final effect", async () => {
     const relayId = `overlap-final-effect-${randomUUID()}`;
     const generation = "shared-generation";
-    const finalEffects: string[] = [];
+    const finalEffects: Array<{ turnId: string; stdout: string }> = [];
     const trace: Array<Record<string, unknown>> = [];
     const first = registerOwnedNativeHookRelay({
       provider: "codex",
@@ -85,7 +89,7 @@ describe("native hook relay overlapping owners", () => {
     trace.push({ stage: "recovery", result: "direct-pre-tool-use-serviced" });
 
     const attemptFinalEffect = async (turnId: string, toolUseId: string) => {
-      await invokeNativeHookRelayBridge({
+      const response = await invokeNativeHookRelayBridge({
         provider: "codex",
         relayId,
         generation,
@@ -99,12 +103,18 @@ describe("native hook relay overlapping owners", () => {
           tool_input: { command: "/bin/echo ok" },
         },
       });
-      finalEffects.push(turnId);
+      const executed = await execFileAsync("/bin/echo", ["ok"]);
+      finalEffects.push({ turnId, stdout: executed.stdout.trim() });
+      return response;
     };
 
-    await attemptFinalEffect("turn-1", "allowed-call-1");
-    await attemptFinalEffect("turn-2", "allowed-call-2");
-    trace.push({ stage: "live-owners", finalEffects: [...finalEffects] });
+    const firstResponse = await attemptFinalEffect("turn-1", "allowed-call-1");
+    const secondResponse = await attemptFinalEffect("turn-2", "allowed-call-2");
+    trace.push({
+      stage: "live-owners",
+      responses: [firstResponse, secondResponse],
+      finalEffects: [...finalEffects],
+    });
 
     first.unregister();
     let releasedError = "";
@@ -114,7 +124,10 @@ describe("native hook relay overlapping owners", () => {
       releasedError = error instanceof Error ? error.message : String(error);
     }
     expect(releasedError).toContain("native hook relay bridge stale registration");
-    expect(finalEffects).toEqual(["turn-1", "turn-2"]);
+    expect(finalEffects).toEqual([
+      { turnId: "turn-1", stdout: "ok" },
+      { turnId: "turn-2", stdout: "ok" },
+    ]);
     trace.push({
       stage: "released-owner",
       result: "rejected-before-final-effect",
@@ -123,7 +136,11 @@ describe("native hook relay overlapping owners", () => {
     });
 
     await attemptFinalEffect("turn-2", "allowed-call-2-after-release");
-    expect(finalEffects).toEqual(["turn-1", "turn-2", "turn-2"]);
+    expect(finalEffects).toEqual([
+      { turnId: "turn-1", stdout: "ok" },
+      { turnId: "turn-2", stdout: "ok" },
+      { turnId: "turn-2", stdout: "ok" },
+    ]);
     trace.push({ stage: "surviving-owner", finalEffects: [...finalEffects] });
     process.stdout.write(`native-hook-relay-behavior-proof ${JSON.stringify(trace)}\n`);
     second.unregister();

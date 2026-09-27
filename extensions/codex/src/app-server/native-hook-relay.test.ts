@@ -825,7 +825,6 @@ function createRelay(options?: {
     runId: "run-1",
     allowedEvents: ["pre_tool_use", "post_tool_use", "permission_request", "before_agent_finalize"],
     expiresAtMs: Date.now() + 1000,
-    claimAndVerifyTurn: async () => undefined,
     shouldRelayEvent: (event) => !inactiveEvents.has(event),
     toolMatcherForEvent: (event) => options?.matchers?.[event],
     commandForEvent: (event, commandOptions) =>

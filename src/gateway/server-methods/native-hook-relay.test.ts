@@ -481,6 +481,45 @@ describe("native hook relay gateway method", () => {
     expect(testing.getNativeHookRelayInvocationsForTests()).toHaveLength(1);
   });
 
+  it("services an authenticated readiness probe through the Gateway path", async () => {
+    const admit = vi.fn(async () => {
+      throw new Error("readiness must not enter final execution custody");
+    });
+    const relay = registerOwnedNativeHookRelay({
+      provider: "codex",
+      sessionId: "session-readiness",
+      runId: "run-readiness",
+      allowedEvents: ["pre_tool_use"],
+      executionAdmission: { toolNames: ["exec"], admit },
+    });
+    await relay.ready;
+    expect(relay.claimTurn?.("turn-readiness")).toBe(true);
+    const registration = testing.getNativeHookRelayRegistrationForTests(relay.relayId);
+    if (!registration) {
+      throw new Error("readiness registration missing");
+    }
+
+    const respond = await invokeNativeHook({
+      provider: "codex",
+      relayId: relay.relayId,
+      generation: relay.generation,
+      readinessNonce: registration.readinessNonce,
+      event: "pre_tool_use",
+      rawPayload: {
+        hook_event_name: "PreToolUse",
+        session_id: "session-readiness",
+        turn_id: "turn-readiness",
+        tool_name: "Bash",
+        tool_use_id: "openclaw-relay-readiness-gateway",
+        tool_input: { command: "/bin/echo ok" },
+      },
+    });
+
+    expect(respond).toHaveBeenCalledWith(true, { stdout: "", stderr: "", exitCode: 0 });
+    expect(admit).not.toHaveBeenCalled();
+    relay.unregister();
+  });
+
   it("rejects unknown relay ids", async () => {
     const respond = await invokeNativeHook({
       provider: "codex",
