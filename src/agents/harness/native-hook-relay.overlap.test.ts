@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { PassThrough, Readable } from "node:stream";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { runNativeHookRelayCliFromArgv } from "../../cli/native-hook-relay-cli.js";
 import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
@@ -9,6 +11,7 @@ import {
 import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
+import { splitShellArgs } from "../../utils/shell-argv.js";
 import { invokeNativeHookRelayBridge } from "./native-hook-relay-client.js";
 import {
   deleteNativeHookRelayBridgeRecordIfOwned,
@@ -88,28 +91,51 @@ describe("native hook relay overlapping owners", () => {
     await first.verifyPreToolUse?.("turn-1");
     trace.push({ stage: "recovery", result: "direct-pre-tool-use-serviced" });
 
+    const commandArgv = splitShellArgs(first.commandForEvent("pre_tool_use", { timeoutMs: 2_000 }));
+    if (!commandArgv) {
+      throw new Error("generated Codex hook command did not parse");
+    }
+    const callGateway = vi.fn(async (): Promise<never> => {
+      throw new Error("stale ownership must not escape through the Gateway fallback");
+    });
     const attemptFinalEffect = async (turnId: string, toolUseId: string) => {
-      const response = await invokeNativeHookRelayBridge({
-        provider: "codex",
-        relayId,
-        generation,
-        event: "pre_tool_use",
-        timeoutMs: 2_000,
-        rawPayload: {
-          hook_event_name: "PreToolUse",
-          turn_id: turnId,
-          tool_name: "Bash",
-          tool_use_id: toolUseId,
-          tool_input: { command: "/bin/echo ok" },
-        },
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const exitCode = await runNativeHookRelayCliFromArgv(commandArgv, {
+        stdin: Readable.from([
+          JSON.stringify({
+            hook_event_name: "PreToolUse",
+            turn_id: turnId,
+            tool_name: "Bash",
+            tool_use_id: toolUseId,
+            tool_input: { command: "/bin/echo ok" },
+          }),
+        ]),
+        stdout,
+        stderr,
+        callGateway,
       });
-      const executed = await execFileAsync("/bin/echo", ["ok"]);
-      finalEffects.push({ turnId, stdout: executed.stdout.trim() });
-      return response;
+      const hookStdout = String(stdout.read() ?? "");
+      const hookStderr = String(stderr.read() ?? "");
+      const denied = hookStdout.includes('"permissionDecision":"deny"');
+      let executed = false;
+      if (exitCode === 0 && !hookStderr && !denied) {
+        const finalIo = await execFileAsync("/bin/echo", ["ok"]);
+        finalEffects.push({ turnId, stdout: finalIo.stdout.trim() });
+        executed = true;
+      }
+      return {
+        exitCode,
+        stdout: hookStdout,
+        stderr: hookStderr,
+        executed,
+      };
     };
 
     const firstResponse = await attemptFinalEffect("turn-1", "allowed-call-1");
     const secondResponse = await attemptFinalEffect("turn-2", "allowed-call-2");
+    expect(firstResponse).toMatchObject({ exitCode: 0, stdout: "", stderr: "", executed: true });
+    expect(secondResponse).toMatchObject({ exitCode: 0, stdout: "", stderr: "", executed: true });
     trace.push({
       stage: "live-owners",
       responses: [firstResponse, secondResponse],
@@ -117,13 +143,16 @@ describe("native hook relay overlapping owners", () => {
     });
 
     first.unregister();
-    let releasedError = "";
-    try {
-      await attemptFinalEffect("turn-1", "released-call-1");
-    } catch (error) {
-      releasedError = error instanceof Error ? error.message : String(error);
-    }
-    expect(releasedError).toContain("native hook relay bridge stale registration");
+    const releasedResponse = await attemptFinalEffect("turn-1", "released-call-1");
+    expect(releasedResponse).toMatchObject({ exitCode: 0, executed: false });
+    expect(releasedResponse.stderr).toContain("native hook relay bridge stale registration");
+    expect(JSON.parse(releasedResponse.stdout)).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+      },
+    });
+    expect(callGateway).not.toHaveBeenCalled();
     expect(finalEffects).toEqual([
       { turnId: "turn-1", stdout: "ok" },
       { turnId: "turn-2", stdout: "ok" },
@@ -131,7 +160,7 @@ describe("native hook relay overlapping owners", () => {
     trace.push({
       stage: "released-owner",
       result: "rejected-before-final-effect",
-      error: releasedError,
+      response: releasedResponse,
       finalEffects: [...finalEffects],
     });
 

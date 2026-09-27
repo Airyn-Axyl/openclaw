@@ -126,7 +126,7 @@ describe("runCodexAppServerSideQuestion native relay readiness", () => {
         host.closeHost();
         host.closeAdmission();
       }),
-    ).rejects.toThrow("native hook relay readiness failed (direct bridge)");
+    ).rejects.toThrow("native hook relay readiness failed (direct bridge and gateway fallback)");
     expectNativeHookRelayReleased(relayIdDuringFork);
   });
 });
