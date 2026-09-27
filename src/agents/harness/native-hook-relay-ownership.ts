@@ -26,7 +26,14 @@ export async function claimAndVerifyRelayTurn(
   assertCurrent?.();
   bindProcessAuthority?.();
   assertCurrent?.();
-  await handle.verifyPreToolUse?.(turnId);
+  try {
+    await handle.verifyPreToolUse?.(turnId);
+  } catch (error) {
+    // Cancellation or replacement that wins during readiness owns the failure.
+    // A still-current turn preserves the precise relay component error.
+    assertCurrent?.();
+    throw error;
+  }
   assertCurrent?.();
 }
 

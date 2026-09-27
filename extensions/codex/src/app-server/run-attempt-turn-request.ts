@@ -69,7 +69,7 @@ export async function prepareCodexAttemptTurnRequest(
     appServer,
     runAbortController,
   } = connection;
-  const { state } = turnRuntime;
+  const { state, turnIdRef } = turnRuntime;
   const explicitSkillInputs = await resolveCodexExplicitSkillInputs({
     client: resourceState.client,
     cwd: resourceState.codexExecutionCwd,
@@ -350,13 +350,22 @@ export async function prepareCodexAttemptTurnRequest(
       acceptedTurnId = startedTurn.turn.id;
       const bindNativeTurnAuthority = () => {
         resources.nativeProcessAuthority?.bindTurn(turnClient, threadId, acceptedTurnId!);
+        turnIdRef.current = acceptedTurnId;
       };
       if (resourceState.nativeHookRelay) {
-        await resourceState.nativeHookRelay.claimAndVerifyTurn(
+        const pendingTurnStart = resourceState.nativeHookRelay.claimAndVerifyTurn(
           acceptedTurnId,
           assertTurnCurrent,
           bindNativeTurnAuthority,
         );
+        state.pendingTurnStart = pendingTurnStart;
+        try {
+          await pendingTurnStart;
+        } finally {
+          if (state.pendingTurnStart === pendingTurnStart) {
+            state.pendingTurnStart = undefined;
+          }
+        }
       } else {
         bindNativeTurnAuthority();
         assertTurnCurrent();

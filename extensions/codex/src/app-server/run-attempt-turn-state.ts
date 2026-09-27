@@ -49,6 +49,9 @@ class CodexAttemptState {
   lifecycleStarted = false;
   lifecycleTerminalEmitted = false;
   nativeHookRelayLastRenewedAt = 0;
+  // Accepted native turns publish their id before readiness, while tool requests
+  // remain gated on this exact startup proof.
+  pendingTurnStart?: Promise<void>;
   activeAppServerTurnRequests = 0;
   activeLocalProjections = 0;
   projectionClosed = false;
