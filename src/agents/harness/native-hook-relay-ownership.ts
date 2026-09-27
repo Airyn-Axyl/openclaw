@@ -18,8 +18,11 @@ export async function claimAndVerifyRelayTurn(
   handle: Pick<NativeHookRelayRegistrationHandle, "claimTurn" | "verifyPreToolUse">,
   turnId: string,
   assertCurrent?: () => void,
+  bindProcessAuthority?: () => void,
 ): Promise<void> {
   handle.claimTurn?.(turnId);
+  bindProcessAuthority?.();
+  assertCurrent?.();
   await handle.verifyPreToolUse?.(turnId);
   assertCurrent?.();
 }

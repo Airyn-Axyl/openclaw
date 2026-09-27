@@ -7,6 +7,7 @@ import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createAdmittedHostCapabilityTestFixture } from "./host-capability.test-support.js";
+import { claimAndVerifyRelayTurn } from "./native-hook-relay-ownership.js";
 import * as store from "./native-hook-relay-store.js";
 import {
   invokeNativeHookRelay,
@@ -19,6 +20,23 @@ afterEach(async () => {
   await testing.clearNativeHookRelaysForTests();
   resetGlobalHookRunner();
   vi.restoreAllMocks();
+});
+
+it("binds native process authority after ownership claim and before readiness", async () => {
+  const order: string[] = [];
+  await claimAndVerifyRelayTurn(
+    {
+      claimTurn: () => order.push("claim"),
+      verifyPreToolUse: async () => {
+        order.push("verify");
+      },
+    },
+    "turn-1",
+    () => order.push("assert"),
+    () => order.push("bind"),
+  );
+
+  expect(order).toEqual(["claim", "bind", "assert", "verify", "assert"]);
 });
 
 it.each(["cancellation", "replacement", "foreground retirement"] as const)(

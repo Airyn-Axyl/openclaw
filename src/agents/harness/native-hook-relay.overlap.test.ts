@@ -180,4 +180,26 @@ describe("native hook relay overlapping owners", () => {
     protectedRelay.unregister();
     relay.unregister();
   });
+
+  it("fails readiness when the harmless PreToolUse probe is denied", async () => {
+    const policy = vi.fn(async () => ({
+      block: true,
+      blockReason: "fixture policy denied readiness",
+    }));
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "before_tool_call", handler: policy }]),
+    );
+    const relay = registerAgentRelay({
+      runId: "run-denied-readiness",
+      allowedEvents: ["pre_tool_use"],
+    });
+    await relay.ready;
+    relay.claimTurn?.("turn-denied-readiness");
+
+    await expect(relay.verifyPreToolUse?.("turn-denied-readiness")).rejects.toThrow(
+      "readiness probe was denied or returned an unexpected decision",
+    );
+    expect(policy).toHaveBeenCalledOnce();
+    relay.unregister();
+  });
 });

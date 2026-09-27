@@ -242,7 +242,11 @@ describe("native hook execution admission", () => {
       }
       expect(onResolution).toHaveBeenCalledExactlyOnceWith("cancelled");
       await expect(
-        resolveNativeHookRelayDeferredToolApproval({ relayId: relay.relayId, toolUseId: "call" }),
+        resolveNativeHookRelayDeferredToolApproval({
+          relayId: relay.relayId,
+          runId: relay.runId,
+          toolUseId: "call",
+        }),
       ).resolves.toBeUndefined();
     },
   );

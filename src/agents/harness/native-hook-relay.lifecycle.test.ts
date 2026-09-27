@@ -114,10 +114,62 @@ it.each([
   await expect(
     resolveNativeHookRelayDeferredToolApproval({
       relayId: relays[1]!.relayId,
+      runId: relays[1]!.runId,
       toolUseId: toolIds[1],
     }),
   ).resolves.toEqual({ handled: true, outcome: "approved-once" });
   expect(nativeHookRelayState.pendingPreToolUseApprovals.size).toBe(0);
+});
+
+it("keeps a sibling run's deferred approval when one overlapping owner exits", async () => {
+  const relayId = "overlapping-approval-owners";
+  const firstCancelled = vi.fn();
+  const secondCancelled = vi.fn();
+  const first = registerNativeHookRelay({
+    provider: "codex",
+    relayId,
+    sessionId: "overlapping-approvals",
+    runId: "run-1",
+  });
+  const second = registerNativeHookRelay({
+    provider: "codex",
+    relayId,
+    sessionId: "overlapping-approvals",
+    runId: "run-2",
+  });
+  for (const [relay, onResolution] of [
+    [first, firstCancelled],
+    [second, secondCancelled],
+  ] as const) {
+    setNativeHookRelayPreToolUseApproval({
+      relayId,
+      runId: relay.runId,
+      toolUseId: "shared-call",
+      originalParamsFingerprint: "{}",
+      deferredApproval: {
+        approval: { title: relay.runId, description: relay.runId, onResolution },
+        toolName: "fixture",
+        baseParams: {},
+      },
+    });
+  }
+
+  first.unregister();
+  expect(firstCancelled).toHaveBeenCalledExactlyOnceWith("cancelled");
+  expect(secondCancelled).not.toHaveBeenCalled();
+  testing.setNativeHookRelayDeferredToolApprovalRequesterForTests(async () => ({
+    blocked: false,
+    params: {},
+    approvalResolution: "allow-once",
+  }));
+  await expect(
+    resolveNativeHookRelayDeferredToolApproval({
+      relayId,
+      runId: second.runId,
+      toolUseId: "shared-call",
+    }),
+  ).resolves.toEqual({ handled: true, outcome: "approved-once" });
+  second.unregister();
 });
 
 it("detaches both approval maps before a cancellation callback installs a successor", async () => {
@@ -127,7 +179,7 @@ it("detaches both approval maps before a cancellation callback installs a succes
     sessionId: "old",
     runId: "old",
   });
-  const key = JSON.stringify([relay.relayId, "call"]);
+  const key = JSON.stringify([relay.relayId, "new", "call"]);
   const held = createDeferredCore<{
     blocked: false;
     params: unknown;
@@ -139,6 +191,7 @@ it("detaches both approval maps before a cancellation callback installs a succes
   const oldController = new AbortController();
   const oldPermission = {
     relayId: relay.relayId,
+    runId: relay.runId,
     controller: oldController,
     waiters: 1,
     cancelWhenUnobserved: true,
@@ -156,6 +209,7 @@ it("detaches both approval maps before a cancellation callback installs a succes
     });
     setNativeHookRelayPreToolUseApproval({
       relayId: relay.relayId,
+      runId: "new",
       toolUseId: "call",
       originalParamsFingerprint: "fixture",
       deferredApproval: {
@@ -166,15 +220,18 @@ it("detaches both approval maps before a cancellation callback installs a succes
     });
     nativeHookRelayState.pendingPermissionApprovals.set(permissionKey, {
       ...oldPermission,
+      runId: "new",
       controller: successorController,
     });
     nativeHookRelayState.permissionAllowAlwaysApprovals.set("new-grant", {
       relayId: relay.relayId,
+      runId: "new",
     });
     nativeHookRelayState.permissionApprovalWindows.set(relay.relayId, [1]);
   });
   setNativeHookRelayPreToolUseApproval({
     relayId: relay.relayId,
+    runId: relay.runId,
     toolUseId: "call",
     originalParamsFingerprint: "fixture",
     deferredApproval: {
@@ -185,6 +242,7 @@ it("detaches both approval maps before a cancellation callback installs a succes
   });
   const pending = resolveNativeHookRelayDeferredToolApproval({
     relayId: relay.relayId,
+    runId: relay.runId,
     toolUseId: "call",
   });
   relay.unregister();

@@ -2993,10 +2993,12 @@ describe("native hook relay registry", () => {
 
     const firstApproval = resolveNativeHookRelayDeferredToolApproval({
       relayId: relay.relayId,
+      runId: relay.runId,
       toolUseId: "native-approval-report-duplicate",
     });
     const duplicateApproval = resolveNativeHookRelayDeferredToolApproval({
       relayId: relay.relayId,
+      runId: relay.runId,
       toolUseId: "native-approval-report-duplicate",
     });
 
@@ -3014,6 +3016,7 @@ describe("native hook relay registry", () => {
     await expect(
       resolveNativeHookRelayDeferredToolApproval({
         relayId: relay.relayId,
+        runId: relay.runId,
         toolUseId: "native-approval-report-duplicate",
       }),
     ).resolves.toBeUndefined();
@@ -3060,6 +3063,7 @@ describe("native hook relay registry", () => {
     await expect(
       resolveNativeHookRelayDeferredToolApproval({
         relayId: relay.relayId,
+        runId: relay.runId,
         toolUseId: "native-approval-cancelled",
       }),
     ).resolves.toEqual({

@@ -421,13 +421,17 @@ describe("runCodexAppServerAttempt native hook relay", () => {
       createMockPluginRegistry([
         {
           hookName: "before_tool_call",
-          handler: vi.fn(() => ({
-            requireApproval: {
-              title: "Operator review required",
-              description: "Command needs an interactive approver",
-              onResolution,
-            },
-          })),
+          handler: vi.fn((event) =>
+            event.toolCallId.startsWith("openclaw-relay-readiness-")
+              ? undefined
+              : {
+                  requireApproval: {
+                    title: "Operator review required",
+                    description: "Command needs an interactive approver",
+                    onResolution,
+                  },
+                },
+          ),
         },
       ]),
     );

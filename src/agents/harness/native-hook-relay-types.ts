@@ -104,8 +104,12 @@ export type NativeHookRelayRegistrationHandle = NativeHookRelayRegistration & {
   generation?: string;
   /** Binds a provider turn to this registration for overlapping-run routing. */
   claimTurn?: (turnId: string) => void;
-  /** Claims a provider turn, proves its policy path, then checks caller ownership. */
-  claimAndVerifyTurn: (turnId: string, assertCurrent?: () => void) => Promise<void>;
+  /** Claims a provider turn, binds its process authority, then proves its policy path. */
+  claimAndVerifyTurn: (
+    turnId: string,
+    assertCurrent?: () => void,
+    bindProcessAuthority?: () => void,
+  ) => Promise<void>;
   /** Proves the direct bridge and PreToolUse policy path without executing the tool. */
   verifyPreToolUse?: (turnId: string) => Promise<void>;
   shouldRelayEvent: (event: NativeHookRelayEvent) => boolean;
@@ -250,6 +254,7 @@ export type NativeHookRelayPermissionApprovalRequester = (
 
 export type NativeHookRelayPendingPermissionApproval = {
   relayId: string;
+  runId: string;
   promise: Promise<NativeHookRelayPermissionApprovalResult>;
   controller: AbortController;
   waiters: number;
@@ -258,6 +263,7 @@ export type NativeHookRelayPendingPermissionApproval = {
 
 export type NativeHookRelayPreToolUseApproval = {
   relayId: string;
+  runId: string;
   deferredApproval: DeferredPluginToolApproval;
   originalParamsFingerprint: string;
   resolutionPromise?: Promise<NativeHookRelayDeferredApprovalOutcome>;
@@ -296,7 +302,10 @@ export type NativeHookRelaySharedState = {
   pendingPermissionApprovals: Map<string, NativeHookRelayPendingPermissionApproval>;
   pendingPreToolUseApprovals: Map<string, NativeHookRelayPreToolUseApproval>;
   permissionApprovalWindows: Map<string, number[]>;
-  permissionAllowAlwaysApprovals: Map<string, { relayId: string; expiresAtMs?: number }>;
+  permissionAllowAlwaysApprovals: Map<
+    string,
+    { relayId: string; runId: string; expiresAtMs?: number }
+  >;
 };
 
 /** Private bundled-runtime callbacks for retained direct-child hook policy. */

@@ -19,7 +19,6 @@ import {
   unregisterNativeHookRelayBridge,
   isRetryableNativeHookRelayBridgeLookupError,
 } from "./native-hook-relay-bridge.js";
-import { invokeNativeHookRelayBridge } from "./native-hook-relay-client.js";
 import {
   codexNativeHookRelayProviderAdapter,
   normalizeNativeHookInvocation,
@@ -45,12 +44,12 @@ import {
   permissionRequestContentFingerprintForTests,
   permissionRequestToolInputKeyFingerprintForTests,
   pruneNativeHookRelayPermissionAllowAlways,
-  removeNativeHookRelayPermissionState,
   detachNativeHookRelayApprovalState,
   setNativeHookRelayDeferredToolApprovalRequesterForTests,
   setNativeHookRelayPermissionApprovalRequesterForTests,
 } from "./native-hook-relay-permissions.js";
 import { buildNativeHookRelayCommandPlan } from "./native-hook-relay-plan.js";
+import { verifyNativeHookRelayPreToolUseReadiness } from "./native-hook-relay-readiness.js";
 import {
   MAX_NATIVE_HOOK_RELAY_INVOCATIONS,
   nativeHookRelayRegistrationsById,
@@ -360,8 +359,8 @@ function registerNativeHookRelayInternal(
               claimantRunId: sibling.runId,
             }),
         }),
-      claimAndVerifyTurn: (turnId, assertCurrent) =>
-        claimAndVerifyRelayTurn(handle, turnId, assertCurrent),
+      claimAndVerifyTurn: (turnId, assertCurrent, bindProcessAuthority) =>
+        claimAndVerifyRelayTurn(handle, turnId, assertCurrent, bindProcessAuthority),
       verifyPreToolUse: async (turnIdInput) => {
         if (!allowedEvents.includes("pre_tool_use")) {
           return;
@@ -370,37 +369,17 @@ function registerNativeHookRelayInternal(
         if (!turnId || !registration.claimedTurnIds.has(turnId)) {
           throw new Error("native hook relay readiness failed (turn ownership): unclaimed turn");
         }
-        const invokeProbe = () =>
-          invokeNativeHookRelayBridge({
-            provider: registration.provider,
-            relayId,
-            generation,
-            event: "pre_tool_use",
-            timeoutMs: 2_000,
-            registrationTimeoutMs: 250,
-            rawPayload: {
-              hook_event_name: "PreToolUse",
-              session_id: registration.sessionId,
-              turn_id: turnId,
-              tool_name: "Bash",
-              tool_use_id: `openclaw-relay-readiness-${randomUUID()}`,
-              tool_input: { command: "/bin/echo ok" },
-            },
-          });
-        try {
-          await invokeProbe();
-        } catch {
-          try {
+        await verifyNativeHookRelayPreToolUseReadiness({
+          provider: registration.provider,
+          relayId,
+          generation,
+          sessionId: registration.sessionId,
+          turnId,
+          recover: async () => {
             handle.renew();
             await handle.drain();
-            await invokeProbe();
-          } catch (retryError) {
-            const message = retryError instanceof Error ? retryError.message : String(retryError);
-            throw new Error(`native hook relay readiness failed (direct bridge): ${message}`, {
-              cause: retryError,
-            });
-          }
-        }
+          },
+        });
       },
       unregister: () => deactivateNativeHookRelayForeground(relayId, registration),
     };
@@ -451,6 +430,11 @@ function unregisterNativeHookRelay(
   // SAFETY: this deletes the same private expando installed by setRelayLifetime.
   delete (registration as RelayLifetimeRegistration)[RELAY_LIFETIME];
   ensureNativeHookRelayTurnClaims(registration).clear();
+  const cancelRegistrationApprovals = detachNativeHookRelayApprovalState(
+    relayId,
+    registration.runId,
+  );
+  cancelRegistrationApprovals();
   if (!relayRegistrationsById.get(relayId)?.size && !relays.has(relayId)) {
     void unregisterNativeHookRelayBridge(relayId, {
       ...options,
@@ -505,7 +489,8 @@ function deactivateNativeHookRelayForeground(
   }
   if (shouldRetain) {
     // Retention covers child PreToolUse only; foreground approval authority ends now.
-    removeNativeHookRelayPermissionState(relayId);
+    const cancelApprovals = detachNativeHookRelayApprovalState(relayId, registration.runId);
+    cancelApprovals();
     return;
   }
   unregisterNativeHookRelay(relayId, registration);
