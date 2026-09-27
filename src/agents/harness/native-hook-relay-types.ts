@@ -102,10 +102,6 @@ export type NativeHookRelayRegistration = {
 
 export type NativeHookRelayRegistrationHandle = NativeHookRelayRegistration & {
   generation?: string;
-  /** Binds an exact provider thread/turn to this registration for overlapping-run routing. */
-  claimTurn?: (turnId: string, threadId?: string) => boolean;
-  /** Proves the direct bridge and PreToolUse policy path without executing the tool. */
-  verifyPreToolUse?: (turnId: string, threadId?: string) => Promise<void>;
   shouldRelayEvent: (event: NativeHookRelayEvent) => boolean;
   toolMatcherForEvent: (event: NativeHookRelayEvent) => readonly string[] | undefined;
   commandForEvent: (
@@ -225,6 +221,10 @@ export type ActiveNativeHookRelayRegistrationHandle = NativeHookRelayRegistratio
 };
 
 export type OwnedNativeHookRelayRegistrationHandle = ActiveNativeHookRelayRegistrationHandle & {
+  /** Binds an exact provider thread/turn within the bundled runtime. */
+  claimTurn: (turnId: string, threadId?: string) => boolean;
+  /** Proves the direct bridge and PreToolUse policy path without executing the tool. */
+  verifyPreToolUse: (turnId: string, threadId?: string) => Promise<void>;
   /** Claims a provider turn, binds its process authority, then proves its policy path. */
   claimAndVerifyTurn: (
     turnId: string,
@@ -300,6 +300,8 @@ export type NativeHookRelaySharedState = {
   relays: Map<string, ActiveNativeHookRelayRegistration>;
   /** Live registrations grouped by stable relay id, oldest first. */
   relayRegistrationsById?: Map<string, Set<ActiveNativeHookRelayRegistration>>;
+  /** Bounded claims whose exact owner retired while a sibling remained live. */
+  retiredTurnClaimsById?: Map<string, Set<string>>;
   relayBridges: Map<string, NativeHookRelayBridgeRegistration>;
   pendingOperations: Set<Promise<unknown>>;
   invocations: NativeHookRelayInvocation[];

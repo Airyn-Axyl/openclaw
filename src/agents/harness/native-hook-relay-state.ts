@@ -26,3 +26,5 @@ export const nativeHookRelayState = getNativeHookRelaySharedState();
 // in place so a hot plugin refresh does not split relay ownership.
 export const nativeHookRelayRegistrationsById = (nativeHookRelayState.relayRegistrationsById ??=
   new Map());
+export const nativeHookRelayRetiredTurnClaimsById = (nativeHookRelayState.retiredTurnClaimsById ??=
+  new Map());

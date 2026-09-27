@@ -1,6 +1,7 @@
 import { NATIVE_HOOK_RELAY_BRIDGE_STALE_REGISTRATION_ERROR } from "./native-hook-relay-client.js";
 import {
   nativeHookRelayRegistrationsById,
+  nativeHookRelayRetiredTurnClaimsById,
   nativeHookRelayState,
 } from "./native-hook-relay-state.js";
 import type {
@@ -12,6 +13,7 @@ import type {
 import { isJsonObject } from "./native-hook-relay-utils.js";
 
 const MAX_NATIVE_HOOK_RELAY_TURN_CLAIMS = 32;
+const MAX_NATIVE_HOOK_RELAY_RETIRED_TURN_CLAIMS = 64;
 const { relays } = nativeHookRelayState;
 
 export async function claimAndVerifyRelayTurn(
@@ -21,7 +23,7 @@ export async function claimAndVerifyRelayTurn(
   bindProcessAuthority?: () => void,
   threadId?: string,
 ): Promise<void> {
-  if (handle.claimTurn?.(turnId, threadId) === false) {
+  if (!handle.claimTurn(turnId, threadId)) {
     throw new Error("native hook relay turn claim rejected");
   }
   assertCurrent?.();
@@ -96,6 +98,51 @@ export function ensureNativeHookRelayTurnClaims(
   return registration.claimedTurnIds;
 }
 
+export function retireNativeHookRelayTurnClaims(
+  relayId: string,
+  registration: ActiveNativeHookRelayRegistration,
+): void {
+  const claims = ensureNativeHookRelayTurnClaims(registration);
+  if (!nativeHookRelayRegistrationsById.get(relayId)?.size) {
+    nativeHookRelayRetiredTurnClaimsById.delete(relayId);
+    claims.clear();
+    return;
+  }
+  if (claims.size > 0) {
+    const retiredClaims = nativeHookRelayRetiredTurnClaimsById.get(relayId) ?? new Set<string>();
+    nativeHookRelayRetiredTurnClaimsById.set(relayId, retiredClaims);
+    for (const claim of claims) {
+      if (retiredClaims.size >= MAX_NATIVE_HOOK_RELAY_RETIRED_TURN_CLAIMS) {
+        const oldest = retiredClaims.values().next().value;
+        if (oldest) {
+          retiredClaims.delete(oldest);
+        }
+      }
+      retiredClaims.add(claim);
+    }
+  }
+  claims.clear();
+}
+
+function isRetiredNativeHookRelayTurnClaim(
+  relayId: string,
+  turnId: string,
+  threadId?: string,
+): boolean {
+  const retiredClaims = nativeHookRelayRetiredTurnClaimsById.get(relayId);
+  if (!retiredClaims) {
+    return false;
+  }
+  if (threadId) {
+    return retiredClaims.has(buildNativeHookRelayTurnClaimKey(turnId, threadId));
+  }
+  if (retiredClaims.has(turnId)) {
+    return true;
+  }
+  const scopedSuffix = `\0${turnId}`;
+  return [...retiredClaims].some((claim) => claim.endsWith(scopedSuffix));
+}
+
 export function buildNativeHookRelayTurnClaimKey(
   turnIdInput: string,
   threadIdInput?: string,
@@ -117,6 +164,9 @@ export function claimNativeHookRelayTurn(params: {
     return false;
   }
   const claimKey = buildNativeHookRelayTurnClaimKey(turnId, params.threadIdInput);
+  if (isRetiredNativeHookRelayTurnClaim(params.relayId, turnId, params.threadIdInput?.trim())) {
+    return false;
+  }
   const claimedTurnIds = ensureNativeHookRelayTurnClaims(params.registration);
   for (const sibling of nativeHookRelayRegistrationsById.get(params.relayId) ?? []) {
     if (sibling !== params.registration && ensureNativeHookRelayTurnClaims(sibling).has(claimKey)) {
@@ -179,6 +229,9 @@ export function resolveNativeHookRelayInvocationTarget(params: {
         ? params.rawPayload.session_id.trim()
         : "";
     const scopedClaimKey = buildNativeHookRelayTurnClaimKey(turnId, threadId);
+    if (isRetiredNativeHookRelayTurnClaim(params.relayId, turnId, threadId)) {
+      throw new Error(NATIVE_HOOK_RELAY_BRIDGE_STALE_REGISTRATION_ERROR);
+    }
     const scopedOwners = threadId
       ? [...registrations].filter((candidate) =>
           ensureNativeHookRelayTurnClaims(candidate).has(scopedClaimKey),

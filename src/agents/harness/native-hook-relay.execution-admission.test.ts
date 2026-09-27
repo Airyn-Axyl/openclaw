@@ -92,7 +92,6 @@ describe("native hook execution admission", () => {
         tool_name: "Bash",
         tool_input: { command: "true" },
       };
-      relay.claimTurn?.("native-turn");
       await expect(
         invokeNativeHookRelay({
           provider: "codex",

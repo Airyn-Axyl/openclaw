@@ -17,18 +17,14 @@ import {
   deleteNativeHookRelayBridgeRecordIfOwned,
   readNativeHookRelayBridgeRecord,
 } from "./native-hook-relay-store.js";
-import {
-  registerNativeHookRelay,
-  registerOwnedNativeHookRelay,
-  testing,
-} from "./native-hook-relay.js";
+import { registerOwnedNativeHookRelay, testing } from "./native-hook-relay.js";
 
 const execFileAsync = promisify(execFile);
 
 function registerAgentRelay(
-  overrides: Partial<Parameters<typeof registerNativeHookRelay>[0]> = {},
+  overrides: Partial<Parameters<typeof registerOwnedNativeHookRelay>[0]> = {},
 ) {
-  return registerNativeHookRelay({
+  return registerOwnedNativeHookRelay({
     provider: "codex",
     relayId: `overlap-${randomUUID()}`,
     sessionId: "session-1",
@@ -123,9 +119,8 @@ describe("native hook relay overlapping owners", () => {
     });
     await Promise.all([first.ready, second.ready]);
     expect(first.claimTurn?.("turn-1")).toBe(true);
-    expect(second.claimTurn?.("turn-2")).toBe(true);
     expect(second.claimTurn?.("turn-1")).toBe(false);
-    trace.push({ stage: "overlap", turn1: "claimed-run-1", turn2: "claimed-run-2" });
+    trace.push({ stage: "overlap", turn1: "claimed-run-1", survivor: "unclaimed-run-2" });
 
     const before = await readNativeHookRelayBridgeRecord({ relayId });
     if (!before) {
@@ -186,16 +181,15 @@ describe("native hook relay overlapping owners", () => {
     };
 
     const firstResponse = await attemptFinalEffect("turn-1", "allowed-call-1");
-    const secondResponse = await attemptFinalEffect("turn-2", "allowed-call-2");
     expect(firstResponse).toMatchObject({ exitCode: 0, stdout: "", stderr: "", executed: true });
-    expect(secondResponse).toMatchObject({ exitCode: 0, stdout: "", stderr: "", executed: true });
     trace.push({
       stage: "live-owners",
-      responses: [firstResponse, secondResponse],
+      responses: [firstResponse],
       finalEffects: [...finalEffects],
     });
 
     first.unregister();
+    expect(second.claimTurn("turn-1")).toBe(false);
     const releasedResponse = await attemptFinalEffect("turn-1", "released-call-1");
     expect(releasedResponse).toMatchObject({ exitCode: 0, executed: false });
     expect(releasedResponse.stderr).toContain("native hook relay bridge stale registration");
@@ -206,10 +200,7 @@ describe("native hook relay overlapping owners", () => {
       },
     });
     expect(callGateway).not.toHaveBeenCalled();
-    expect(finalEffects).toEqual([
-      { turnId: "turn-1", stdout: "ok" },
-      { turnId: "turn-2", stdout: "ok" },
-    ]);
+    expect(finalEffects).toEqual([{ turnId: "turn-1", stdout: "ok" }]);
     trace.push({
       stage: "released-owner",
       result: "rejected-before-final-effect",
@@ -217,10 +208,10 @@ describe("native hook relay overlapping owners", () => {
       finalEffects: [...finalEffects],
     });
 
+    expect(second.claimTurn?.("turn-2")).toBe(true);
     await attemptFinalEffect("turn-2", "allowed-call-2-after-release");
     expect(finalEffects).toEqual([
       { turnId: "turn-1", stdout: "ok" },
-      { turnId: "turn-2", stdout: "ok" },
       { turnId: "turn-2", stdout: "ok" },
     ]);
     trace.push({ stage: "surviving-owner", finalEffects: [...finalEffects] });
@@ -230,7 +221,7 @@ describe("native hook relay overlapping owners", () => {
 
   it("routes overlapping same-generation turns to their exact run owners", async () => {
     const relayId = `overlapping-turn-owners-${randomUUID()}`;
-    const first = registerNativeHookRelay({
+    const first = registerOwnedNativeHookRelay({
       provider: "codex",
       relayId,
       generation: "shared-generation",
@@ -238,7 +229,7 @@ describe("native hook relay overlapping owners", () => {
       runId: "run-1",
       allowedEvents: ["post_tool_use"],
     });
-    const second = registerNativeHookRelay({
+    const second = registerOwnedNativeHookRelay({
       provider: "codex",
       relayId,
       generation: "shared-generation",
@@ -301,7 +292,7 @@ describe("native hook relay overlapping owners", () => {
   it("separates reused turn ids by their exact native thread owners", async () => {
     const relayId = `overlapping-thread-turn-owners-${randomUUID()}`;
     const generation = "shared-generation";
-    const first = registerNativeHookRelay({
+    const first = registerOwnedNativeHookRelay({
       provider: "codex",
       relayId,
       generation,
@@ -309,7 +300,7 @@ describe("native hook relay overlapping owners", () => {
       runId: "run-1",
       allowedEvents: ["post_tool_use"],
     });
-    const second = registerNativeHookRelay({
+    const second = registerOwnedNativeHookRelay({
       provider: "codex",
       relayId,
       generation,

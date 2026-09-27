@@ -43,6 +43,7 @@ import {
   latestNativeHookRelayRegistration,
   normalizeNativeHookRelayKey,
   resolveNativeHookRelayInvocationTarget,
+  retireNativeHookRelayTurnClaims,
 } from "./native-hook-relay-ownership.js";
 import {
   clearNativeHookRelayPermissionsForTests,
@@ -104,6 +105,9 @@ const { relays, relayBridges, invocations } = nativeHookRelayState;
 const relayRegistrationsById = nativeHookRelayRegistrationsById;
 const RELAY_LIFETIME = "__openclawNativeHookRelayLifetimeV1";
 const MAX_NATIVE_HOOK_RELAY_REGISTRATIONS_PER_ID = 8;
+let readinessGatewayInvokerForTests:
+  | ((params: InvokeNativeHookRelayParams) => Promise<NativeHookRelayProcessResponse>)
+  | undefined;
 
 type RelayLifetimeRegistration = ActiveNativeHookRelayRegistration & {
   [RELAY_LIFETIME]?: RelayLifetime;
@@ -389,6 +393,7 @@ function registerNativeHookRelayInternal(
             handle.renew();
             await handle.drain();
           },
+          invokeGateway: readinessGatewayInvokerForTests,
         });
       },
       unregister: () => deactivateNativeHookRelayForeground(relayId, registration),
@@ -439,7 +444,7 @@ function unregisterNativeHookRelay(
   lifetime?.retained?.release();
   // SAFETY: this deletes the same private expando installed by setRelayLifetime.
   delete (registration as RelayLifetimeRegistration)[RELAY_LIFETIME];
-  ensureNativeHookRelayTurnClaims(registration).clear();
+  retireNativeHookRelayTurnClaims(relayId, registration);
   const cancelRegistrationApprovals = detachNativeHookRelayApprovalState(
     relayId,
     registration.runId,
@@ -665,7 +670,15 @@ export const testing = {
     }
     await clearNativeHookRelayBridgesForTests();
     invocations.length = 0;
+    readinessGatewayInvokerForTests = undefined;
     clearNativeHookRelayPermissionsForTests();
+  },
+  setNativeHookRelayReadinessGatewayInvokerForTests(
+    invoke:
+      | ((params: InvokeNativeHookRelayParams) => Promise<NativeHookRelayProcessResponse>)
+      | undefined,
+  ): void {
+    readinessGatewayInvokerForTests = invoke;
   },
   getNativeHookRelayInvocationsForTests(): NativeHookRelayInvocation[] {
     return [...invocations];

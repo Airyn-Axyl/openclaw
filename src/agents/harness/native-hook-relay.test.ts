@@ -3389,10 +3389,15 @@ describe("native hook relay registry", () => {
         { hookName: "before_agent_finalize", handler: beforeAgentFinalize },
       ]),
     );
-    const relay = registerAgentRelay({
+    const relay = registerOwnedNativeHookRelay({
+      provider: "codex",
+      sessionId: "session-1",
+      runId: "run-1",
+      agentId: "agent-1",
+      sessionKey: "agent:main:session-1",
       channelId: "telegram",
     });
-    relay.claimTurn?.("turn-1");
+    relay.claimTurn("turn-1");
 
     const response = await invokeNativeHookRelay({
       provider: "codex",
