@@ -102,10 +102,10 @@ export type NativeHookRelayRegistration = {
 
 export type NativeHookRelayRegistrationHandle = NativeHookRelayRegistration & {
   generation?: string;
-  /** Binds a provider turn to this registration for overlapping-run routing. */
-  claimTurn?: (turnId: string) => boolean;
+  /** Binds an exact provider thread/turn to this registration for overlapping-run routing. */
+  claimTurn?: (turnId: string, threadId?: string) => boolean;
   /** Proves the direct bridge and PreToolUse policy path without executing the tool. */
-  verifyPreToolUse?: (turnId: string) => Promise<void>;
+  verifyPreToolUse?: (turnId: string, threadId?: string) => Promise<void>;
   shouldRelayEvent: (event: NativeHookRelayEvent) => boolean;
   toolMatcherForEvent: (event: NativeHookRelayEvent) => readonly string[] | undefined;
   commandForEvent: (
@@ -230,6 +230,7 @@ export type OwnedNativeHookRelayRegistrationHandle = ActiveNativeHookRelayRegist
     turnId: string,
     assertCurrent?: () => void,
     bindProcessAuthority?: () => void,
+    threadId?: string,
   ) => Promise<void>;
   /** Requires current foreground authority; direct publication may use the Gateway fallback. */
   prepareInvocation: () => Promise<void>;

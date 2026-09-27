@@ -8,6 +8,7 @@ const baseParams = {
   generation: "generation-1",
   readinessNonce: "readiness-1",
   sessionId: "session-1",
+  nativeThreadId: "thread-1",
   turnId: "turn-1",
 };
 
@@ -38,7 +39,10 @@ describe("native hook relay readiness transport", () => {
         generation: baseParams.generation,
         readinessNonce: baseParams.readinessNonce,
         event: "pre_tool_use",
-        rawPayload: expect.objectContaining({ turn_id: baseParams.turnId }),
+        rawPayload: expect.objectContaining({
+          session_id: baseParams.nativeThreadId,
+          turn_id: baseParams.turnId,
+        }),
       }),
     );
   });

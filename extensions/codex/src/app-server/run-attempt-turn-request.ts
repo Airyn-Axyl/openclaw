@@ -361,6 +361,7 @@ export async function prepareCodexAttemptTurnRequest(
           acceptedTurnId,
           assertTurnCurrent,
           bindNativeTurnAuthority,
+          threadId,
         );
       } else {
         bindNativeTurnAuthority();

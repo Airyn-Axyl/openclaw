@@ -19,6 +19,7 @@ export async function verifyNativeHookRelayPreToolUseReadiness(params: {
   generation: string;
   readinessNonce: string;
   sessionId: string;
+  nativeThreadId?: string;
   turnId: string;
   recover: () => Promise<void>;
   invokeBridge?: typeof invokeNativeHookRelayBridge;
@@ -36,7 +37,7 @@ export async function verifyNativeHookRelayPreToolUseReadiness(params: {
       ));
   const rawPayload = {
     hook_event_name: "PreToolUse",
-    session_id: params.sessionId,
+    session_id: params.nativeThreadId?.trim() || params.sessionId,
     turn_id: params.turnId,
     tool_name: "Bash",
     tool_use_id: `openclaw-relay-readiness-${randomUUID()}`,

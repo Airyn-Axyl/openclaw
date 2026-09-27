@@ -19,15 +19,16 @@ export async function claimAndVerifyRelayTurn(
   turnId: string,
   assertCurrent?: () => void,
   bindProcessAuthority?: () => void,
+  threadId?: string,
 ): Promise<void> {
-  if (handle.claimTurn?.(turnId) === false) {
+  if (handle.claimTurn?.(turnId, threadId) === false) {
     throw new Error("native hook relay turn claim rejected");
   }
   assertCurrent?.();
   bindProcessAuthority?.();
   assertCurrent?.();
   try {
-    await handle.verifyPreToolUse?.(turnId);
+    await handle.verifyPreToolUse?.(turnId, threadId);
   } catch (error) {
     // Cancellation or replacement that wins during readiness owns the failure.
     // A still-current turn preserves the precise relay component error.
@@ -95,30 +96,41 @@ export function ensureNativeHookRelayTurnClaims(
   return registration.claimedTurnIds;
 }
 
+export function buildNativeHookRelayTurnClaimKey(
+  turnIdInput: string,
+  threadIdInput?: string,
+): string {
+  const turnId = turnIdInput.trim();
+  const threadId = threadIdInput?.trim();
+  return threadId ? `${threadId}\0${turnId}` : turnId;
+}
+
 export function claimNativeHookRelayTurn(params: {
   relayId: string;
   registration: ActiveNativeHookRelayRegistration;
   turnIdInput: string;
+  threadIdInput?: string;
   onDuplicate: (sibling: ActiveNativeHookRelayRegistration) => void;
 }): boolean {
   const turnId = params.turnIdInput.trim();
   if (!turnId || !isLiveNativeHookRelayRegistration(params.relayId, params.registration)) {
     return false;
   }
+  const claimKey = buildNativeHookRelayTurnClaimKey(turnId, params.threadIdInput);
   const claimedTurnIds = ensureNativeHookRelayTurnClaims(params.registration);
   for (const sibling of nativeHookRelayRegistrationsById.get(params.relayId) ?? []) {
-    if (sibling !== params.registration && ensureNativeHookRelayTurnClaims(sibling).has(turnId)) {
+    if (sibling !== params.registration && ensureNativeHookRelayTurnClaims(sibling).has(claimKey)) {
       params.onDuplicate(sibling);
       return false;
     }
   }
-  if (claimedTurnIds.size >= MAX_NATIVE_HOOK_RELAY_TURN_CLAIMS && !claimedTurnIds.has(turnId)) {
+  if (claimedTurnIds.size >= MAX_NATIVE_HOOK_RELAY_TURN_CLAIMS && !claimedTurnIds.has(claimKey)) {
     const oldest = claimedTurnIds.values().next().value;
     if (oldest) {
       claimedTurnIds.delete(oldest);
     }
   }
-  claimedTurnIds.add(turnId);
+  claimedTurnIds.add(claimKey);
   return true;
 }
 
@@ -162,9 +174,22 @@ export function resolveNativeHookRelayInvocationTarget(params: {
       ? params.rawPayload.turn_id.trim()
       : "";
   if (turnId) {
-    const owners = [...registrations].filter((candidate) =>
-      ensureNativeHookRelayTurnClaims(candidate).has(turnId),
-    );
+    const threadId =
+      isJsonObject(params.rawPayload) && typeof params.rawPayload.session_id === "string"
+        ? params.rawPayload.session_id.trim()
+        : "";
+    const scopedClaimKey = buildNativeHookRelayTurnClaimKey(turnId, threadId);
+    const scopedOwners = threadId
+      ? [...registrations].filter((candidate) =>
+          ensureNativeHookRelayTurnClaims(candidate).has(scopedClaimKey),
+        )
+      : [];
+    const owners =
+      scopedOwners.length > 0
+        ? scopedOwners
+        : [...registrations].filter((candidate) =>
+            ensureNativeHookRelayTurnClaims(candidate).has(turnId),
+          );
     if (owners.length === 1) {
       return owners[0];
     }

@@ -245,6 +245,75 @@ describe("native hook relay overlapping owners", () => {
     second.unregister();
   });
 
+  it("separates reused turn ids by their exact native thread owners", async () => {
+    const relayId = `overlapping-thread-turn-owners-${randomUUID()}`;
+    const generation = "shared-generation";
+    const first = registerNativeHookRelay({
+      provider: "codex",
+      relayId,
+      generation,
+      sessionId: "session-1",
+      runId: "run-1",
+      allowedEvents: ["post_tool_use"],
+    });
+    const second = registerNativeHookRelay({
+      provider: "codex",
+      relayId,
+      generation,
+      sessionId: "session-1",
+      runId: "run-2",
+      allowedEvents: ["post_tool_use"],
+    });
+    await Promise.all([first.ready, second.ready]);
+    expect(first.claimTurn?.("turn-1", "thread-1")).toBe(true);
+    expect(second.claimTurn?.("turn-1", "thread-2")).toBe(true);
+    expect(second.claimTurn?.("turn-1", "thread-1")).toBe(false);
+
+    const invoke = (threadId: string, toolUseId: string) =>
+      invokeNativeHookRelayBridge({
+        provider: "codex",
+        relayId,
+        generation,
+        event: "post_tool_use",
+        timeoutMs: 2_000,
+        rawPayload: {
+          hook_event_name: "PostToolUse",
+          session_id: threadId,
+          turn_id: "turn-1",
+          tool_name: "Bash",
+          tool_use_id: toolUseId,
+          tool_input: { command: "/bin/echo ok" },
+          tool_response: { output: "ok", exit_code: 0 },
+        },
+      });
+
+    await expect(invoke("thread-1", "call-1")).resolves.toEqual({
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+    });
+    await expect(invoke("thread-2", "call-2")).resolves.toEqual({
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+    });
+    expect(testing.getNativeHookRelayInvocationsForTests()).toMatchObject([
+      { runId: "run-1", turnId: "turn-1", toolUseId: "call-1" },
+      { runId: "run-2", turnId: "turn-1", toolUseId: "call-2" },
+    ]);
+
+    first.unregister();
+    await expect(invoke("thread-1", "late-call-1")).rejects.toThrow(
+      "native hook relay bridge stale registration",
+    );
+    await expect(invoke("thread-2", "call-2-after-release")).resolves.toEqual({
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+    });
+    second.unregister();
+  });
+
   it("verifies harmless startup policy and keeps protected mutations denied", async () => {
     const protectedPath = "/protected/ax3710-guard/index.js";
     const beforeToolCall = vi.fn(async () => ({}));
