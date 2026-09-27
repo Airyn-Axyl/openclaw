@@ -49,9 +49,10 @@ class CodexAttemptState {
   lifecycleStarted = false;
   lifecycleTerminalEmitted = false;
   nativeHookRelayLastRenewedAt = 0;
-  // Accepted native turns publish their id before readiness, while tool requests
-  // remain gated on this exact startup proof.
-  pendingTurnStart?: Promise<void>;
+  // Cover the complete turn-start interval so an immediate native server request
+  // cannot race ahead of accepted-turn publication or relay readiness. The
+  // boolean remains false after a failed proof, keeping that turn fail-closed.
+  pendingTurnStart?: Promise<boolean>;
   activeAppServerTurnRequests = 0;
   activeLocalProjections = 0;
   projectionClosed = false;

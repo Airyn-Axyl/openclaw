@@ -1,4 +1,5 @@
 import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   interruptCodexTurnAndWaitBestEffort,
   retireUnsafeCodexTurnClientBestEffort,
@@ -138,6 +139,8 @@ export async function prepareCodexAttemptTurnRequest(
   };
   const startCodexTurn = async (): Promise<CodexStartedTurn> => {
     const activeTurnRoute = await ensureCurrentThreadRoute();
+    const turnStartReadiness = createDeferred<boolean>();
+    state.pendingTurnStart = turnStartReadiness.promise;
     // Resume may observe a newer native tuple after host auth was prepared. Keep
     // that truthful binding, but never infer with credentials selected for the old tuple.
     assertCodexSessionRuntimeOwnership(
@@ -333,11 +336,12 @@ export async function prepareCodexAttemptTurnRequest(
       },
     });
     let acceptedTurnId: string | undefined;
+    let startedTurn: CodexTurnStartResponse | undefined;
     const upstreamUserText = turnStartParams.input
       .flatMap((item) => (item.type === "text" ? [item.text] : []))
       .join("\n");
     try {
-      const startedTurn = assertCodexTurnStartResponse(
+      startedTurn = assertCodexTurnStartResponse(
         await turnClient.request("turn/start", turnStartParams, {
           timeoutMs: params.timeoutMs,
           signal: runAbortController.signal,
@@ -353,19 +357,11 @@ export async function prepareCodexAttemptTurnRequest(
         turnIdRef.current = acceptedTurnId;
       };
       if (resourceState.nativeHookRelay) {
-        const pendingTurnStart = resourceState.nativeHookRelay.claimAndVerifyTurn(
+        await resourceState.nativeHookRelay.claimAndVerifyTurn(
           acceptedTurnId,
           assertTurnCurrent,
           bindNativeTurnAuthority,
         );
-        state.pendingTurnStart = pendingTurnStart;
-        try {
-          await pendingTurnStart;
-        } finally {
-          if (state.pendingTurnStart === pendingTurnStart) {
-            state.pendingTurnStart = undefined;
-          }
-        }
       } else {
         bindNativeTurnAuthority();
         assertTurnCurrent();
@@ -377,8 +373,16 @@ export async function prepareCodexAttemptTurnRequest(
       }
       throwIfTurnStartAcceptedAfterAbort();
       await continuation?.accept(acceptedTurnId);
+      turnStartReadiness.resolve(true);
       return { turn: startedTurn, upstreamUserText };
     } catch (error) {
+      turnStartReadiness.resolve(false);
+      if (acceptedTurnId && startedTurn && runAbortController.signal.aborted) {
+        // Codex accepted the turn before local cancellation revoked readiness.
+        // Hand its exact identity to the active-turn lifecycle so interruption,
+        // terminal confirmation, and background-process cleanup remain joined.
+        return { turn: startedTurn, upstreamUserText };
+      }
       if (acceptedTurnId || isCodexAppServerIndeterminateRequestCancellationError(error)) {
         // Codex serializes start/interrupt per thread; an empty id interrupts
         // the accepted native turn even when local cancellation hid its response.
