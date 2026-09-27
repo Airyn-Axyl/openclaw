@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { invokeNativeHookRelayBridge } from "./native-hook-relay-client.js";
 import type { NativeHookRelayProvider } from "./native-hook-relay-types.js";
 
-class NativeHookRelayReadinessDecisionError extends Error {}
+class NativeHookRelayReadinessResponseError extends Error {}
 
 export async function verifyNativeHookRelayPreToolUseReadiness(params: {
   provider: NativeHookRelayProvider;
@@ -31,19 +31,18 @@ export async function verifyNativeHookRelayPreToolUseReadiness(params: {
     });
     if (
       response.exitCode !== 0 ||
-      response.stdout.trim().length > 0 ||
       response.stderr.trim().length > 0 ||
       response.failureDisposition !== undefined
     ) {
-      throw new NativeHookRelayReadinessDecisionError(
-        "native hook relay readiness probe was denied or returned an unexpected decision",
+      throw new NativeHookRelayReadinessResponseError(
+        "native hook relay readiness probe returned a hook failure",
       );
     }
   };
   try {
     await invokeProbe();
   } catch (error) {
-    if (error instanceof NativeHookRelayReadinessDecisionError) {
+    if (error instanceof NativeHookRelayReadinessResponseError) {
       throw error;
     }
     try {

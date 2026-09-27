@@ -26,7 +26,10 @@ it("binds native process authority after ownership claim and before readiness", 
   const order: string[] = [];
   await claimAndVerifyRelayTurn(
     {
-      claimTurn: () => order.push("claim"),
+      claimTurn: () => {
+        order.push("claim");
+        return true;
+      },
       verifyPreToolUse: async () => {
         order.push("verify");
       },
@@ -36,7 +39,30 @@ it("binds native process authority after ownership claim and before readiness", 
     () => order.push("bind"),
   );
 
-  expect(order).toEqual(["claim", "bind", "assert", "verify", "assert"]);
+  expect(order).toEqual(["claim", "assert", "bind", "assert", "verify", "assert"]);
+});
+
+it("rejects a refused turn claim before binding process authority or readiness", async () => {
+  const order: string[] = [];
+
+  await expect(
+    claimAndVerifyRelayTurn(
+      {
+        claimTurn: () => {
+          order.push("claim");
+          return false;
+        },
+        verifyPreToolUse: async () => {
+          order.push("verify");
+        },
+      },
+      "turn-duplicate",
+      () => order.push("assert"),
+      () => order.push("bind"),
+    ),
+  ).rejects.toThrow("native hook relay turn claim rejected");
+
+  expect(order).toEqual(["claim"]);
 });
 
 it.each(["cancellation", "replacement", "foreground retirement"] as const)(

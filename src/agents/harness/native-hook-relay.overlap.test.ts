@@ -181,7 +181,7 @@ describe("native hook relay overlapping owners", () => {
     relay.unregister();
   });
 
-  it("fails readiness when the harmless PreToolUse probe is denied", async () => {
+  it("accepts an intentional policy denial as a serviced readiness probe", async () => {
     const policy = vi.fn(async () => ({
       block: true,
       blockReason: "fixture policy denied readiness",
@@ -196,9 +196,7 @@ describe("native hook relay overlapping owners", () => {
     await relay.ready;
     relay.claimTurn?.("turn-denied-readiness");
 
-    await expect(relay.verifyPreToolUse?.("turn-denied-readiness")).rejects.toThrow(
-      "readiness probe was denied or returned an unexpected decision",
-    );
+    await expect(relay.verifyPreToolUse?.("turn-denied-readiness")).resolves.toBeUndefined();
     expect(policy).toHaveBeenCalledOnce();
     relay.unregister();
   });

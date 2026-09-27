@@ -103,7 +103,7 @@ export type NativeHookRelayRegistration = {
 export type NativeHookRelayRegistrationHandle = NativeHookRelayRegistration & {
   generation?: string;
   /** Binds a provider turn to this registration for overlapping-run routing. */
-  claimTurn?: (turnId: string) => void;
+  claimTurn?: (turnId: string) => boolean;
   /** Claims a provider turn, binds its process authority, then proves its policy path. */
   claimAndVerifyTurn: (
     turnId: string,

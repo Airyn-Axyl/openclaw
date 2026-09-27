@@ -20,7 +20,10 @@ export async function claimAndVerifyRelayTurn(
   assertCurrent?: () => void,
   bindProcessAuthority?: () => void,
 ): Promise<void> {
-  handle.claimTurn?.(turnId);
+  if (handle.claimTurn?.(turnId) === false) {
+    throw new Error("native hook relay turn claim rejected");
+  }
+  assertCurrent?.();
   bindProcessAuthority?.();
   assertCurrent?.();
   await handle.verifyPreToolUse?.(turnId);
@@ -90,16 +93,16 @@ export function claimNativeHookRelayTurn(params: {
   registration: ActiveNativeHookRelayRegistration;
   turnIdInput: string;
   onDuplicate: (sibling: ActiveNativeHookRelayRegistration) => void;
-}): void {
+}): boolean {
   const turnId = params.turnIdInput.trim();
   if (!turnId || !isLiveNativeHookRelayRegistration(params.relayId, params.registration)) {
-    return;
+    return false;
   }
   const claimedTurnIds = ensureNativeHookRelayTurnClaims(params.registration);
   for (const sibling of nativeHookRelayRegistrationsById.get(params.relayId) ?? []) {
     if (sibling !== params.registration && ensureNativeHookRelayTurnClaims(sibling).has(turnId)) {
       params.onDuplicate(sibling);
-      return;
+      return false;
     }
   }
   if (claimedTurnIds.size >= MAX_NATIVE_HOOK_RELAY_TURN_CLAIMS && !claimedTurnIds.has(turnId)) {
@@ -109,6 +112,7 @@ export function claimNativeHookRelayTurn(params: {
     }
   }
   claimedTurnIds.add(turnId);
+  return true;
 }
 
 export function resolveNativeHookRelayInvocationTarget(params: {
