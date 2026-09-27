@@ -139,8 +139,6 @@ export async function prepareCodexAttemptTurnRequest(
   };
   const startCodexTurn = async (): Promise<CodexStartedTurn> => {
     const activeTurnRoute = await ensureCurrentThreadRoute();
-    const turnStartReadiness = createDeferred<boolean>();
-    state.pendingTurnStart = turnStartReadiness.promise;
     // Resume may observe a newer native tuple after host auth was prepared. Keep
     // that truthful binding, but never infer with credentials selected for the old tuple.
     assertCodexSessionRuntimeOwnership(
@@ -340,6 +338,8 @@ export async function prepareCodexAttemptTurnRequest(
     const upstreamUserText = turnStartParams.input
       .flatMap((item) => (item.type === "text" ? [item.text] : []))
       .join("\n");
+    const turnStartReadiness = createDeferred<boolean>();
+    state.pendingTurnStart = turnStartReadiness.promise;
     try {
       startedTurn = assertCodexTurnStartResponse(
         await turnClient.request("turn/start", turnStartParams, {
