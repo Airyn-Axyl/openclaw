@@ -71,6 +71,7 @@ import type {
 } from "./native-hook-relay-types.js";
 import { NATIVE_HOOK_RELAY_EVENTS } from "./native-hook-relay-types.js";
 import {
+  isJsonObject,
   isJsonValue,
   normalizePositiveInteger,
   readNativeHookRelayEvent,
@@ -180,6 +181,7 @@ function registerNativeHookRelayInternal(
   pruneNativeHookRelayPermissionAllowAlways();
   const relayId = normalizeNativeHookRelayKey(params.relayId, "id") ?? randomUUID();
   const generation = normalizeNativeHookRelayKey(params.generation, "generation") ?? randomUUID();
+  const readinessNonce = randomUUID();
   const generationMismatchGraceMs = normalizePositiveInteger(params.generationMismatchGraceMs, 0);
   const now = Date.now();
   const expiresAtMs = resolveNativeHookRelayExpiresAtMs(params.ttlMs);
@@ -204,6 +206,7 @@ function registerNativeHookRelayInternal(
       relayId,
       provider: params.provider,
       generation,
+      readinessNonce,
       ...(generationMismatchGraceMs > 0
         ? { generationMismatchGraceExpiresAtMs: now + generationMismatchGraceMs }
         : {}),
@@ -373,6 +376,7 @@ function registerNativeHookRelayInternal(
           provider: registration.provider,
           relayId,
           generation,
+          readinessNonce,
           sessionId: registration.sessionId,
           turnId,
           recover: async () => {
@@ -544,6 +548,11 @@ export async function invokeNativeHookRelay(
   if (!isJsonValue(params.rawPayload)) {
     throw new Error("native hook relay payload must be JSON-compatible");
   }
+  const isReadinessProbe = isNativeHookRelayReadinessProbe({
+    params,
+    registration,
+    event,
+  });
 
   const normalized = normalizeNativeHookInvocation({
     registration,
@@ -557,6 +566,7 @@ export async function invokeNativeHookRelay(
       event,
       params.rawPayload,
       signal,
+      isReadinessProbe,
     );
   if (event === "pre_tool_use" || event === "permission_request") {
     effectiveRegistration.assertActive?.();
@@ -568,7 +578,9 @@ export async function invokeNativeHookRelay(
       registration: effectiveRegistration,
       invocation: normalized,
       adapter: codexNativeHookRelayProviderAdapter,
-      executionAdmission: readRelayLifetime(registration)?.executionAdmission,
+      executionAdmission: isReadinessProbe
+        ? undefined
+        : readRelayLifetime(registration)?.executionAdmission,
       assertExecutionAdmissionCurrent,
     }),
     signal,
@@ -591,6 +603,31 @@ export async function invokeNativeHookRelay(
     });
   }
   return response;
+}
+
+function isNativeHookRelayReadinessProbe(params: {
+  params: InvokeNativeHookRelayParams;
+  registration: ActiveNativeHookRelayRegistration;
+  event: NativeHookRelayEvent;
+}): boolean {
+  if (
+    params.event !== "pre_tool_use" ||
+    params.params.readinessNonce !== params.registration.readinessNonce ||
+    !isJsonObject(params.params.rawPayload)
+  ) {
+    return false;
+  }
+  const payload = params.params.rawPayload;
+  if (
+    payload.hook_event_name !== "PreToolUse" ||
+    payload.tool_name !== "Bash" ||
+    typeof payload.tool_use_id !== "string" ||
+    !payload.tool_use_id.startsWith("openclaw-relay-readiness-") ||
+    !isJsonObject(payload.tool_input)
+  ) {
+    return false;
+  }
+  return payload.tool_input.command === "/bin/echo ok";
 }
 
 function projectNativeHookRelayPreToolUseFailure(

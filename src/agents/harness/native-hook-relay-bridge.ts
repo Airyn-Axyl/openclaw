@@ -422,6 +422,9 @@ function readNativeHookRelayBridgePayload(value: unknown): InvokeNativeHookRelay
     provider: value.provider,
     relayId: value.relayId,
     generation: readNonEmptyString(value.generation, "generation"),
+    ...(value.readinessNonce === undefined
+      ? {}
+      : { readinessNonce: readNonEmptyString(value.readinessNonce, "readinessNonce") }),
     event: value.event,
     rawPayload: value.rawPayload,
   };

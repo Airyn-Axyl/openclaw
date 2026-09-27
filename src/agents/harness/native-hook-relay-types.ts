@@ -163,6 +163,7 @@ export type InvokeNativeHookRelayParams = {
   provider: unknown;
   relayId: unknown;
   generation?: unknown;
+  readinessNonce?: unknown;
   event: unknown;
   rawPayload: unknown;
   requireGeneration?: boolean;
@@ -216,6 +217,8 @@ export type NativeHookRelayPermissionApprovalResult =
 
 export type ActiveNativeHookRelayRegistration = NativeHookRelayRegistration & {
   generation: string;
+  /** In-memory proof that a direct-bridge request is the registration's startup probe. */
+  readinessNonce: string;
   preToolUseLoopDetection: boolean;
   preToolUseFailureProjections: Map<string, { promise: Promise<void>; settled: boolean }>;
   claimedTurnIds: Set<string>;

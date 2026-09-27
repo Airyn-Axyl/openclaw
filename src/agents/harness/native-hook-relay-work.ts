@@ -114,6 +114,7 @@ export async function resolveNativeHookRelayInvocationBinding(
   event: NativeHookRelayEvent,
   rawPayload: unknown,
   signal?: AbortSignal,
+  skipRetentionClaim = false,
 ): Promise<{
   registration: NativeHookRelayRegistration;
   assertExecutionAdmissionCurrent: () => void;
@@ -130,7 +131,7 @@ export async function resolveNativeHookRelayInvocationBinding(
   ) {
     throw new Error("native hook relay registration is inactive");
   }
-  const claim = lifetime.retention?.readClaim(rawPayload);
+  const claim = skipRetentionClaim ? undefined : lifetime.retention?.readClaim(rawPayload);
   if (claim && event === "pre_tool_use" && lifetime.retained && lifetime.retention) {
     const retained = lifetime.retained;
     const retention = lifetime.retention;

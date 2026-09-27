@@ -8,6 +8,7 @@ export async function verifyNativeHookRelayPreToolUseReadiness(params: {
   provider: NativeHookRelayProvider;
   relayId: string;
   generation: string;
+  readinessNonce: string;
   sessionId: string;
   turnId: string;
   recover: () => Promise<void>;
@@ -17,6 +18,7 @@ export async function verifyNativeHookRelayPreToolUseReadiness(params: {
       provider: params.provider,
       relayId: params.relayId,
       generation: params.generation,
+      readinessNonce: params.readinessNonce,
       event: "pre_tool_use",
       timeoutMs: 2_000,
       registrationTimeoutMs: 250,

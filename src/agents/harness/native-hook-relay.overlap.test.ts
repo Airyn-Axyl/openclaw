@@ -297,4 +297,47 @@ describe("native hook relay overlapping owners", () => {
     expect(policy).toHaveBeenCalledOnce();
     relay.unregister();
   });
+
+  it("keeps the readiness probe out of real execution custody without trusting its payload", async () => {
+    const policy = vi.fn(async () => ({}));
+    const admit = vi.fn(async () => {
+      throw new Error("fixture execution admission rejected synthetic command");
+    });
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "before_tool_call", handler: policy }]),
+    );
+    const relay = registerOwnedNativeHookRelay({
+      provider: "codex",
+      relayId: `readiness-admission-${randomUUID()}`,
+      sessionId: "session-1",
+      runId: "run-readiness-admission",
+      allowedEvents: ["pre_tool_use"],
+      executionAdmission: { toolNames: ["exec"], admit },
+    });
+    await relay.ready;
+    expect(relay.claimTurn?.("turn-readiness-admission")).toBe(true);
+
+    await expect(relay.verifyPreToolUse?.("turn-readiness-admission")).resolves.toBeUndefined();
+    expect(policy).toHaveBeenCalledOnce();
+    expect(admit).not.toHaveBeenCalled();
+
+    await expect(
+      invokeNativeHookRelayBridge({
+        provider: "codex",
+        relayId: relay.relayId,
+        generation: relay.generation,
+        event: "pre_tool_use",
+        timeoutMs: 2_000,
+        rawPayload: {
+          hook_event_name: "PreToolUse",
+          turn_id: "turn-readiness-admission",
+          tool_name: "Bash",
+          tool_use_id: `openclaw-relay-readiness-${randomUUID()}`,
+          tool_input: { command: "/bin/echo ok" },
+        },
+      }),
+    ).rejects.toThrow("fixture execution admission rejected synthetic command");
+    expect(admit).toHaveBeenCalledOnce();
+    relay.unregister();
+  });
 });

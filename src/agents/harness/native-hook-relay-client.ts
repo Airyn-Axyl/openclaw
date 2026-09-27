@@ -62,6 +62,7 @@ export async function invokeNativeHookRelayBridge(
           relayId,
           event,
           generation: params.generation,
+          readinessNonce: params.readinessNonce,
           rawPayload: params.rawPayload,
         },
       });
