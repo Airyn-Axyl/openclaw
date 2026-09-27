@@ -47,6 +47,59 @@ afterEach(async () => {
 });
 
 describe("native hook relay overlapping owners", () => {
+  it("preserves unclaimed turn routing for a sole legacy owner", async () => {
+    const relay = registerAgentRelay({ allowedEvents: ["post_tool_use"] });
+    await relay.ready;
+
+    await expect(
+      invokeNativeHookRelayBridge({
+        provider: "codex",
+        relayId: relay.relayId,
+        generation: relay.generation,
+        event: "post_tool_use",
+        timeoutMs: 2_000,
+        rawPayload: {
+          hook_event_name: "PostToolUse",
+          turn_id: "legacy-unclaimed-turn",
+          tool_name: "Bash",
+          tool_use_id: "legacy-call",
+          tool_input: { command: "/bin/echo ok" },
+          tool_response: { output: "ok", exit_code: 0 },
+        },
+      }),
+    ).resolves.toEqual({ stdout: "", stderr: "", exitCode: 0 });
+
+    relay.unregister();
+  });
+
+  it("keeps an unclaimed turn fail-closed while legacy owners overlap", async () => {
+    const relayId = `overlap-unclaimed-${randomUUID()}`;
+    const first = registerAgentRelay({ relayId, allowedEvents: ["post_tool_use"] });
+    const second = registerAgentRelay({ relayId, allowedEvents: ["post_tool_use"] });
+    await Promise.all([first.ready, second.ready]);
+
+    await expect(
+      invokeNativeHookRelayBridge({
+        provider: "codex",
+        relayId,
+        generation: second.generation,
+        event: "post_tool_use",
+        timeoutMs: 2_000,
+        rawPayload: {
+          hook_event_name: "PostToolUse",
+          turn_id: "contested-unclaimed-turn",
+          tool_name: "Bash",
+          tool_use_id: "contested-unclaimed-call",
+          tool_input: { command: "/bin/echo ok" },
+          tool_response: { output: "ok", exit_code: 0 },
+        },
+      }),
+    ).rejects.toThrow("native hook relay bridge stale registration");
+
+    second.unregister();
+    first.unregister();
+  });
+
   it("proves overlap recovery and rejects released ownership before final effect", async () => {
     const relayId = `overlap-final-effect-${randomUUID()}`;
     const generation = "shared-generation";

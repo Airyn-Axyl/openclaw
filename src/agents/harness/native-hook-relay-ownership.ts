@@ -193,6 +193,15 @@ export function resolveNativeHookRelayInvocationTarget(params: {
     if (owners.length === 1) {
       return owners[0];
     }
+    if (registrations.size === 1) {
+      const [soleRegistration] = registrations;
+      if (soleRegistration && ensureNativeHookRelayTurnClaims(soleRegistration).size === 0) {
+        // Preserve the pre-claim public contract for a sole legacy owner. Once an
+        // owner participates in exact turn claims, every non-retained turn must
+        // resolve through a claim so a released sibling cannot be misrouted here.
+        return soleRegistration;
+      }
+    }
     // Every accepted modern Codex turn is claimed before hooks can execute.
     // Never let a late or unknown turn downgrade to generation/latest routing,
     // including after its original overlapping owner has already exited.
