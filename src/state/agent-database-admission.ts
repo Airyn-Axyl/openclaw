@@ -272,6 +272,38 @@ function readSelectedAgentDatabaseAdmissionRefusal(
   return refusal;
 }
 
+const preparationWaiters = new Map<string, Set<() => void>>();
+
+/**
+ * Work that left a preparation scope is a public caller and stays refused until the pending
+ * inspection ends. Wait for that end, success or failure, then let the caller re-read admission.
+ */
+export function waitForPendingAgentDatabasePreparation(
+  agentIds: Iterable<string>,
+  options: AdmissionOptions = {},
+): Promise<void> | undefined {
+  const key = stateKey(options);
+  const waits: Promise<void>[] = [];
+  for (const agentId of agentIds) {
+    const normalized = normalizeAgentId(agentId);
+    if (
+      refusalsByState.get(key)?.refusals.get(normalized)?.code !==
+      "agent-database-inspection-pending"
+    ) {
+      continue;
+    }
+    const waiterKey = `${key}\0${normalized}`;
+    const waiters = preparationWaiters.get(waiterKey) ?? new Set<() => void>();
+    preparationWaiters.set(waiterKey, waiters);
+    waits.push(
+      new Promise<void>((resolve) => {
+        waiters.add(resolve);
+      }),
+    );
+  }
+  return waits.length > 0 ? Promise.all(waits).then(() => undefined) : undefined;
+}
+
 /** Run work that outlives the current preparation without inheriting its borrowed admission. */
 export function exitAgentDatabasePreparation<T>(operation: () => T): T {
   return preparation.exit(operation);
@@ -304,6 +336,12 @@ export async function preparePendingAgentDatabase(
     current.refusals = refusals;
   } finally {
     scope.active = false;
+    const waiterKey = `${key}\0${refusal.agentId}`;
+    const waiters = preparationWaiters.get(waiterKey);
+    preparationWaiters.delete(waiterKey);
+    for (const resolve of waiters ?? []) {
+      resolve();
+    }
   }
   sessionChanges.emit({ all: true, scope: { agentId: refusal.agentId, topology: true } });
 }

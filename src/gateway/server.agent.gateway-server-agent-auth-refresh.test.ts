@@ -236,6 +236,67 @@ describe("gateway agent auth refresh dispatch", () => {
     }
   });
 
+  test("dispatches when the auth mutation arrives early in a long pending database preparation", async () => {
+    const affectedAgentId = "auth-prepare-long";
+    const runId = "idem-agent-auth-prepare-long";
+    const before = await prepareAuthDispatchAgents(affectedAgentId);
+    saveAuthProfileStore({ version: 1, profiles: {} }, before.agentDir);
+    await prepareGatewayReplyRuntimeForTest({ force: true });
+    const refusal = createAgentDatabaseInspectionRefusal({
+      agentId: affectedAgentId,
+      paths: [before.agentDir],
+      reason: "synthetic long pending startup inspection",
+      pending: true,
+    });
+    recordAgentDatabaseAdmissions([refusal], { source: "startup" });
+    const events: string[] = [];
+    const settled = createDeferred<{ phase: string; error?: unknown }>();
+    const unregister = registerPreparedModelRuntimePublicationListener((event) => {
+      events.push(event.phase);
+      if (event.phase === "published" || event.phase === "failed") {
+        settled.resolve(event);
+      }
+    });
+    try {
+      await preparePendingAgentDatabase(refusal, { assertCurrent: () => {} }, async () => {
+        setRuntimeAuthProfileStoreSnapshot(
+          {
+            version: 1,
+            profiles: {
+              "anthropic:default": {
+                type: "api_key",
+                provider: "anthropic",
+                key: "synthetic-long-prepared-key",
+              },
+            },
+          },
+          before.agentDir,
+        );
+        // Keep inspection pending across event-loop turns and a publication-queue drain.
+        for (let turn = 0; turn < 25; turn += 1) {
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
+        }
+        // The publication must not settle while the agent is still refused.
+        expect(events).not.toContain("failed");
+        expect(events).not.toContain("published");
+      });
+      await expect(settled.promise).resolves.toEqual({ phase: "published" });
+      await expect(
+        loadPublishedGatewayReplyDispatchRuntime({ agentId: affectedAgentId }),
+      ).resolves.toBeDefined();
+      const recovered = sendAgentRpc(gatewaySuite.ws, { agentId: affectedAgentId, runId });
+      await expect(recovered.final).resolves.toMatchObject({
+        ok: true,
+        payload: { status: "ok" },
+      });
+      expect(agentCommandCallsFor(runId)).toHaveLength(1);
+    } finally {
+      unregister();
+    }
+  });
+
   test("keeps a genuinely failed publication unavailable when the readers close first", async () => {
     const affectedAgentId = "auth-recovery-reject";
     const runId = "idem-agent-auth-recovery-reject";

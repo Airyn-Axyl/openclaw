@@ -3,7 +3,10 @@ import { toStringifiedError } from "@openclaw/normalization-core/error-coercion"
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readOnlyWorkerScope } from "../infra/sqlite-readonly-worker-context.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { exitAgentDatabasePreparation } from "../state/agent-database-admission.js";
+import {
+  exitAgentDatabasePreparation,
+  waitForPendingAgentDatabasePreparation,
+} from "../state/agent-database-admission.js";
 import { registerRuntimeAuthProfileStoreMutationListener } from "./auth-profiles/runtime-snapshots.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { assertPreparedModelRuntimeAdmissionCanWait } from "./prepared-model-runtime-admission.js";
@@ -714,9 +717,15 @@ function invalidateForAuthMutation(event: PreparedModelRuntimeAuthMutation): voi
   // too, or the job fails with "Agent database preparation has ended" once preparation completes.
   const leaveRecoveryScopes = <T>(operation: () => T): T =>
     readOnlyWorkerScope.exit(() => exitAgentDatabasePreparation(operation));
-  const publication = leaveRecoveryScopes(() =>
-    modelRuntimeDrain.runAfter(publicationQueue, publish),
-  );
+  // The exited job is a public caller: wait for any still-pending preparation of the affected
+  // agents instead of failing on their recorded refusal. Genuine failures keep their refusal.
+  // Waiting happens before queueing: preparation may itself await the publication queue.
+  const enqueuePublication = () =>
+    leaveRecoveryScopes(() => modelRuntimeDrain.runAfter(publicationQueue, publish));
+  const pendingPreparation = waitForPendingAgentDatabasePreparation(invalidatedConfiguredAgentIds);
+  const publication = pendingPreparation
+    ? pendingPreparation.then(enqueuePublication)
+    : enqueuePublication();
   // Listeners attach promise continuations that outlive the emitter; they must not retain its scopes.
   leaveRecoveryScopes(() => notifyPreparedModelRuntimePublication({ phase: "invalidated" }));
   void publication.catch((error: unknown) => {
