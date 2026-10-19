@@ -23,6 +23,11 @@ import {
   prepareSecretsRuntimeSnapshot,
 } from "../secrets/runtime.js";
 import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
+import {
+  createAgentDatabaseInspectionRefusal,
+  preparePendingAgentDatabase,
+  recordAgentDatabaseAdmissions,
+} from "../state/agent-database-admission.js";
 import { observeGatewayRunExecution } from "./agent-command.test-helpers.js";
 import { installConnectedSessionStoreGatewaySuite } from "./test-helpers.connected-session-store.js";
 import {
@@ -177,6 +182,57 @@ describe("gateway agent auth refresh dispatch", () => {
     } finally {
       unregister();
       await readers.close();
+    }
+  });
+
+  test("dispatches after the auth mutation's pending database preparation ends", async () => {
+    const affectedAgentId = "auth-prepare";
+    const runId = "idem-agent-auth-prepare";
+    const before = await prepareAuthDispatchAgents(affectedAgentId);
+    saveAuthProfileStore({ version: 1, profiles: {} }, before.agentDir);
+    await prepareGatewayReplyRuntimeForTest({ force: true });
+    const refusal = createAgentDatabaseInspectionRefusal({
+      agentId: affectedAgentId,
+      paths: [before.agentDir],
+      reason: "synthetic pending startup inspection",
+      pending: true,
+    });
+    recordAgentDatabaseAdmissions([refusal], { source: "startup" });
+    const settled = createDeferred<{ phase: string; error?: unknown }>();
+    const unregister = registerPreparedModelRuntimePublicationListener((event) => {
+      if (event.phase === "published" || event.phase === "failed") {
+        settled.resolve(event);
+      }
+    });
+    try {
+      // Recovery emits the auth mutation inside the pending preparation, then preparation ends.
+      await preparePendingAgentDatabase(refusal, { assertCurrent: () => {} }, async () => {
+        setRuntimeAuthProfileStoreSnapshot(
+          {
+            version: 1,
+            profiles: {
+              "anthropic:default": {
+                type: "api_key",
+                provider: "anthropic",
+                key: "synthetic-prepared-key",
+              },
+            },
+          },
+          before.agentDir,
+        );
+      });
+      await expect(settled.promise).resolves.toEqual({ phase: "published" });
+      await expect(
+        loadPublishedGatewayReplyDispatchRuntime({ agentId: affectedAgentId }),
+      ).resolves.toBeDefined();
+      const recovered = sendAgentRpc(gatewaySuite.ws, { agentId: affectedAgentId, runId });
+      await expect(recovered.final).resolves.toMatchObject({
+        ok: true,
+        payload: { status: "ok" },
+      });
+      expect(agentCommandCallsFor(runId)).toHaveLength(1);
+    } finally {
+      unregister();
     }
   });
 

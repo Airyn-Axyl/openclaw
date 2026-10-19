@@ -3,6 +3,7 @@ import { toStringifiedError } from "@openclaw/normalization-core/error-coercion"
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readOnlyWorkerScope } from "../infra/sqlite-readonly-worker-context.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { exitAgentDatabasePreparation } from "../state/agent-database-admission.js";
 import { registerRuntimeAuthProfileStoreMutationListener } from "./auth-profiles/runtime-snapshots.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { assertPreparedModelRuntimeAdmissionCanWait } from "./prepared-model-runtime-admission.js";
@@ -709,8 +710,10 @@ function invalidateForAuthMutation(event: PreparedModelRuntimeAuthMutation): voi
   // Publication outlives the emitter's SQLite readers; the runtime owns its reads and cleanup.
   // Database recovery emits auth mutations from a temporary reader scope that closes first, so
   // inheriting it would reject this refresh and leave the agent unpublished with nothing to retry.
+  // Recovery also borrows the pending agent database admission for its own lifetime; leave that
+  // too, or the job fails with "Agent database preparation has ended" once preparation completes.
   const publication = readOnlyWorkerScope.exit(() =>
-    modelRuntimeDrain.runAfter(publicationQueue, publish),
+    exitAgentDatabasePreparation(() => modelRuntimeDrain.runAfter(publicationQueue, publish)),
   );
   notifyPreparedModelRuntimePublication({ phase: "invalidated" });
   void publication.catch((error: unknown) => {

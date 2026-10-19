@@ -272,6 +272,11 @@ function readSelectedAgentDatabaseAdmissionRefusal(
   return refusal;
 }
 
+/** Run work that outlives the current preparation without inheriting its borrowed admission. */
+export function exitAgentDatabasePreparation<T>(operation: () => T): T {
+  return preparation.exit(operation);
+}
+
 /** Preparation borrows only its own pending admission; public callers remain refused. */
 export async function preparePendingAgentDatabase(
   refusal: AgentDatabaseAdmissionRefusal,
