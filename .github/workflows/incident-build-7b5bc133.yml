@@ -1,0 +1,72 @@
+name: incident-build-58d220cc
+# Throwaway, lives only on ci/build-7b5bc133, never merged, deleted when the incident closes.
+# Tests, fail-before proofs, typecheck and tarball for exact commit 58d220ccaa661693efec5dcf27ede29b1da090e1.
+on:
+  push:
+    branches: [ci/build-7b5bc133]
+permissions: {}
+env:
+  TARGET: 58d220ccaa661693efec5dcf27ede29b1da090e1
+  PREV: eeaeec189ed5d7f63df1cfafc0273866264c9a86
+  BASE: 59cb44796b0f1f0daa0e37af8b1495abb45d9bc1
+defaults:
+  run:
+    shell: bash
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 58d220ccaa661693efec5dcf27ede29b1da090e1
+          fetch-depth: 0
+          persist-credentials: false
+      - run: git rev-parse HEAD
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "26.9.0"
+      - run: corepack enable && corepack prepare pnpm@12.5.1 --activate
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: format and lint on changed files (substitute for the local pre-commit hook)
+        run: |
+          FILES="src/state/agent-database-admission.ts src/state/agent-database-admission.test.ts src/agents/prepared-model-runtime.ts src/gateway/server.agent.gateway-server-agent-auth-refresh.test.ts"
+          mkdir -p out
+          pnpm exec oxfmt --check $FILES 2>&1 | tee out/format.log
+          pnpm exec oxlint $FILES 2>&1 | tee out/lint.log
+      - name: tests with fix
+        run: mkdir -p out && pnpm test src/gateway/server.agent.gateway-server-agent-auth-refresh.test.ts --maxWorkers=1 2>&1 | tee out/tests-fixed.log
+      - name: admission unit tests
+        run: pnpm test src/state/agent-database-admission.test.ts --maxWorkers=1 2>&1 | tee out/tests-admission.log
+      - name: fail-before proof A (previous head logic, no waiter release)
+        continue-on-error: true
+        run: |
+          git checkout "$PREV" -- src/agents/prepared-model-runtime.ts
+          pnpm test src/gateway/server.agent.gateway-server-agent-auth-refresh.test.ts --maxWorkers=1 2>&1 | tee out/tests-unfixed-prev-head.log
+      - name: fail-before proof B (prepared-model-runtime.ts reverted to base)
+        continue-on-error: true
+        run: |
+          git checkout "$BASE" -- src/agents/prepared-model-runtime.ts
+          pnpm test src/gateway/server.agent.gateway-server-agent-auth-refresh.test.ts --maxWorkers=1 2>&1 | tee out/tests-unfixed-base.log
+      - name: restore target
+        run: git checkout "$TARGET" -- src/agents/prepared-model-runtime.ts && git status --short && test "$(git rev-parse HEAD)" = "$TARGET"
+      - name: typecheck
+        run: pnpm tsgo:core 2>&1 | tee out/tsgo-core.log
+      - run: pnpm build:package
+      - run: pnpm pack --pack-destination out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: openclaw-tarball
+          path: out/*
+  hash:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: openclaw-tarball
+          path: out
+      - run: cd out && sha256sum *.tgz | tee SHA256SUMS && ls -l
