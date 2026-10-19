@@ -712,10 +712,13 @@ function invalidateForAuthMutation(event: PreparedModelRuntimeAuthMutation): voi
   // inheriting it would reject this refresh and leave the agent unpublished with nothing to retry.
   // Recovery also borrows the pending agent database admission for its own lifetime; leave that
   // too, or the job fails with "Agent database preparation has ended" once preparation completes.
-  const publication = readOnlyWorkerScope.exit(() =>
-    exitAgentDatabasePreparation(() => modelRuntimeDrain.runAfter(publicationQueue, publish)),
+  const leaveRecoveryScopes = <T>(operation: () => T): T =>
+    readOnlyWorkerScope.exit(() => exitAgentDatabasePreparation(operation));
+  const publication = leaveRecoveryScopes(() =>
+    modelRuntimeDrain.runAfter(publicationQueue, publish),
   );
-  notifyPreparedModelRuntimePublication({ phase: "invalidated" });
+  // Listeners attach promise continuations that outlive the emitter; they must not retain its scopes.
+  leaveRecoveryScopes(() => notifyPreparedModelRuntimePublication({ phase: "invalidated" }));
   void publication.catch((error: unknown) => {
     if (!authPublication.isCurrent(transaction)) {
       return;
