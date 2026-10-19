@@ -25,6 +25,7 @@ import {
 import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import {
   createAgentDatabaseInspectionRefusal,
+  failPendingAgentDatabase,
   preparePendingAgentDatabase,
   recordAgentDatabaseAdmissions,
 } from "../state/agent-database-admission.js";
@@ -294,6 +295,61 @@ describe("gateway agent auth refresh dispatch", () => {
       expect(agentCommandCallsFor(runId)).toHaveLength(1);
     } finally {
       unregister();
+    }
+  });
+
+  test("settles the publication when the pending database inspection fails before preparing", async () => {
+    const affectedAgentId = "auth-prepare-failed";
+    const before = await prepareAuthDispatchAgents(affectedAgentId);
+    saveAuthProfileStore({ version: 1, profiles: {} }, before.agentDir);
+    await prepareGatewayReplyRuntimeForTest({ force: true });
+    const refusal = createAgentDatabaseInspectionRefusal({
+      agentId: affectedAgentId,
+      paths: [before.agentDir],
+      reason: "synthetic pending startup inspection",
+      pending: true,
+    });
+    recordAgentDatabaseAdmissions([refusal], { source: "startup" });
+    const settled = createDeferred<{ phase: string; error?: unknown }>();
+    const unregister = registerPreparedModelRuntimePublicationListener((event) => {
+      if (event.phase === "published" || event.phase === "failed") {
+        settled.resolve(event);
+      }
+    });
+    try {
+      // The mutation arrives while inspection is pending; inspection then fails and never prepares.
+      setRuntimeAuthProfileStoreSnapshot(
+        {
+          version: 1,
+          profiles: {
+            "anthropic:default": {
+              type: "api_key",
+              provider: "anthropic",
+              key: "synthetic-failed-inspection-key",
+            },
+          },
+        },
+        before.agentDir,
+      );
+      for (let turn = 0; turn < 10; turn += 1) {
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+      }
+      failPendingAgentDatabase(refusal, new Error("synthetic inspection failure"), {});
+      // Never hung: the publication settles, and an agent that stays refused is not dispatchable.
+      const outcome = await settled.promise;
+      expect(["published", "failed"]).toContain(outcome.phase);
+      if (outcome.phase === "failed") {
+        await expect(
+          loadPublishedGatewayReplyDispatchRuntime({ agentId: affectedAgentId }),
+        ).rejects.toThrow(
+          `prepared reply dispatch runtime owner was not published for ${affectedAgentId}`,
+        );
+      }
+    } finally {
+      unregister();
+      recordAgentDatabaseAdmissions([], { source: "startup" });
     }
   });
 

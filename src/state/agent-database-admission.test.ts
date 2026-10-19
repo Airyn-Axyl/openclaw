@@ -18,9 +18,11 @@ import {
   captureAgentDatabaseAdmission,
   createAgentDatabaseInspectionRefusal,
   evaluateAgentDatabaseAdmissions,
+  failPendingAgentDatabase,
   preparePendingAgentDatabase,
   readAgentDatabaseAdmissionRefusal,
   recordAgentDatabaseAdmissions,
+  waitForPendingAgentDatabasePreparation,
 } from "./agent-database-admission.js";
 import { withAgentDatabaseStartupAdmission } from "./agent-database-startup.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
@@ -159,6 +161,64 @@ describe("agent database admission", () => {
     expect(assertAdmitted).toThrow(expect.objectContaining({ refusal: replacement }));
     recordAgentDatabaseAdmissions([], options);
     expect(assertAdmitted).not.toThrow();
+  });
+
+  describe("waiting for a pending preparation", () => {
+    const pendingRefusal = (agentId: string) =>
+      createAgentDatabaseInspectionRefusal({
+        agentId,
+        paths: [`/synthetic/${agentId}.sqlite`],
+        reason: "synthetic pending inspection",
+        pending: true,
+      });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      recordAgentDatabaseAdmissions([], { source: "startup" });
+    });
+
+    it("does not wait when nothing is pending", () => {
+      recordAgentDatabaseAdmissions([], { source: "startup" });
+      expect(waitForPendingAgentDatabasePreparation(["wait-none"])).toBeUndefined();
+    });
+
+    it("releases the wait when the pending inspection fails before preparing", async () => {
+      const refusal = pendingRefusal("wait-fail");
+      recordAgentDatabaseAdmissions([refusal], { source: "startup" });
+      const wait = waitForPendingAgentDatabasePreparation(["wait-fail"]);
+      expect(wait).toBeDefined();
+      failPendingAgentDatabase(refusal, new Error("synthetic inspection failure"), {});
+      await expect(wait).resolves.toBeUndefined();
+      expect(readAgentDatabaseAdmissionRefusal("wait-fail")?.code).toBe(
+        "agent-database-inspection-failed",
+      );
+    });
+
+    it("releases the wait when the pending refusal is removed", async () => {
+      recordAgentDatabaseAdmissions([pendingRefusal("wait-removed")], { source: "startup" });
+      const wait = waitForPendingAgentDatabasePreparation(["wait-removed"]);
+      recordAgentDatabaseAdmissions([], { source: "startup" });
+      await expect(wait).resolves.toBeUndefined();
+    });
+
+    it("stops waiting after the bound when the pending refusal is never settled", async () => {
+      vi.useFakeTimers();
+      recordAgentDatabaseAdmissions([pendingRefusal("wait-stuck")], { source: "startup" });
+      let released = false;
+      const wait = waitForPendingAgentDatabasePreparation(["wait-stuck"], { timeoutMs: 1_000 });
+      void wait?.then(() => {
+        released = true;
+      });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(released).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(wait).resolves.toBeUndefined();
+      expect(released).toBe(true);
+      // The caller then re-reads admission and still sees the genuine pending refusal.
+      expect(readAgentDatabaseAdmissionRefusal("wait-stuck")?.code).toBe(
+        "agent-database-inspection-pending",
+      );
+    });
   });
 
   it("uses the current preparation scope and refuses an escaped scope after preparation ends", async () => {
