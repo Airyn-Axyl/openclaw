@@ -138,6 +138,7 @@ export function captureAgentDatabasePreparationDeletion(
         }),
       );
       owner.refusals = refusals;
+      releasePreparationWaiters(key, id);
     }
   };
 }

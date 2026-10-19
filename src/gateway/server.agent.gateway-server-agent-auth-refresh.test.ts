@@ -337,16 +337,14 @@ describe("gateway agent auth refresh dispatch", () => {
         });
       }
       failPendingAgentDatabase(refusal, new Error("synthetic inspection failure"), {});
-      // Never hung: the publication settles, and an agent that stays refused is not dispatchable.
+      // Never hung, and never published past the refusal: the agent stays unavailable.
       const outcome = await settled.promise;
-      expect(["published", "failed"]).toContain(outcome.phase);
-      if (outcome.phase === "failed") {
-        await expect(
-          loadPublishedGatewayReplyDispatchRuntime({ agentId: affectedAgentId }),
-        ).rejects.toThrow(
-          `prepared reply dispatch runtime owner was not published for ${affectedAgentId}`,
-        );
-      }
+      expect(outcome.phase).toBe("failed");
+      await expect(
+        loadPublishedGatewayReplyDispatchRuntime({ agentId: affectedAgentId }),
+      ).rejects.toThrow(
+        `prepared reply dispatch runtime owner was not published for ${affectedAgentId}`,
+      );
     } finally {
       unregister();
       recordAgentDatabaseAdmissions([], { source: "startup" });
