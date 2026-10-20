@@ -1,7 +1,12 @@
 /** Lifecycle-owned auth/model discovery snapshots for agent runs. */
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { readOnlyWorkerScope } from "../infra/sqlite-readonly-worker-context.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import {
+  exitAgentDatabasePreparation,
+  waitForPendingAgentDatabasePreparation,
+} from "../state/agent-database-admission.js";
 import { registerRuntimeAuthProfileStoreMutationListener } from "./auth-profiles/runtime-snapshots.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { assertPreparedModelRuntimeAdmissionCanWait } from "./prepared-model-runtime-admission.js";
@@ -705,8 +710,25 @@ function invalidateForAuthMutation(event: PreparedModelRuntimeAuthMutation): voi
   };
   // Auth revocation fences its affected owners immediately; publication must wait for the
   // plugin reservation to settle without occupying the queue needed by replacement recovery.
-  const publication = modelRuntimeDrain.runAfter(publicationQueue, publish);
-  notifyPreparedModelRuntimePublication({ phase: "invalidated" });
+  // Publication outlives the emitter's SQLite readers; the runtime owns its reads and cleanup.
+  // Database recovery emits auth mutations from a temporary reader scope that closes first, so
+  // inheriting it would reject this refresh and leave the agent unpublished with nothing to retry.
+  // Recovery also borrows the pending agent database admission for its own lifetime; leave that
+  // too, or the job fails with "Agent database preparation has ended" once preparation completes.
+  const leaveRecoveryScopes = <T>(operation: () => T): T =>
+    readOnlyWorkerScope.exit(() => exitAgentDatabasePreparation(operation));
+  // The exited job is a public caller: wait for any still-pending preparation of the affected
+  // agents instead of failing on their recorded refusal. A genuine failure releases this wait and
+  // keeps its refusal, so request admission stays refused while this owner's runtime rebuilds.
+  // Waiting happens before queueing: preparation may itself await the publication queue.
+  const enqueuePublication = () =>
+    leaveRecoveryScopes(() => modelRuntimeDrain.runAfter(publicationQueue, publish));
+  const pendingPreparation = waitForPendingAgentDatabasePreparation(invalidatedConfiguredAgentIds);
+  const publication = pendingPreparation
+    ? pendingPreparation.then(enqueuePublication)
+    : enqueuePublication();
+  // Listeners attach promise continuations that outlive the emitter; they must not retain its scopes.
+  leaveRecoveryScopes(() => notifyPreparedModelRuntimePublication({ phase: "invalidated" }));
   void publication.catch((error: unknown) => {
     if (!authPublication.isCurrent(transaction)) {
       return;

@@ -781,7 +781,12 @@ process.stdout.write(JSON.stringify([
       spawnSync(process.execPath, ["scripts/verify-stable-main-closeout.mjs", ...args, ...extra], {
         cwd: path.resolve("."),
         encoding: "utf8",
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WITHDRAWAL_LOOKUPS: lookups },
+        env: {
+          ...process.env,
+          GITHUB_REPOSITORY: "openclaw/openclaw",
+          PATH: `${bin}:${process.env.PATH}`,
+          WITHDRAWAL_LOOKUPS: lookups,
+        },
       });
 
     const initial = run("allowed");
@@ -1029,6 +1034,7 @@ describe("stable closeout workflow publication routing", () => {
         encoding: "utf8",
         env: {
           ...process.env,
+          GITHUB_REPOSITORY: "openclaw/openclaw",
           ALLOW_FAILED_PUBLISH_RECOVERY: String(scenario.manual),
           RELEASE_PUBLISH_RUN_ID: "12",
           RELEASE_TAG: "v2026.6.8",

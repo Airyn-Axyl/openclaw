@@ -138,6 +138,7 @@ export function captureAgentDatabasePreparationDeletion(
         }),
       );
       owner.refusals = refusals;
+      releasePreparationWaiters(key, id);
     }
   };
 }
@@ -236,6 +237,16 @@ export function recordAgentDatabaseAdmissions(
     byAgent.set(refusal.agentId, merged);
   }
   refusalsByState.set(key, { source, refusals: byAgent });
+  // A replaced or removed pending refusal no longer gates anyone.
+  for (const waiterKey of preparationWaiters.keys()) {
+    const agentId = waiterKey.slice(key.length + 1);
+    if (
+      waiterKey.startsWith(`${key}\0`) &&
+      byAgent.get(agentId)?.code !== "agent-database-inspection-pending"
+    ) {
+      releasePreparationWaiters(key, agentId);
+    }
+  }
 }
 
 export function hasAgentDatabaseAdmissions(options: AdmissionOptions = {}): boolean {
@@ -272,6 +283,73 @@ function readSelectedAgentDatabaseAdmissionRefusal(
   return refusal;
 }
 
+const preparationWaiters = new Map<string, Set<() => void>>();
+
+/**
+ * Upper bound on waiting for a pending startup check. One check may take its size-scaled budget
+ * (base 300 s, SQLITE_INSPECTION_TIMEOUT_MS in src/infra/sqlite-readonly-worker.ts, plus a size
+ * term); the 2026-10-19 incident check took 78 s. Six times the base budget keeps ordinary
+ * recovery inside the wait; past it the publish is queued and fails on its own refusal.
+ */
+const PENDING_PREPARATION_WAIT_MS = 6 * 300_000;
+
+function releasePreparationWaiters(key: string, agentId?: string): void {
+  for (const [waiterKey, waiters] of preparationWaiters) {
+    const matches =
+      agentId === undefined ? waiterKey.startsWith(`${key}\0`) : waiterKey === `${key}\0${agentId}`;
+    if (!matches) {
+      continue;
+    }
+    preparationWaiters.delete(waiterKey);
+    for (const release of waiters) {
+      release();
+    }
+  }
+}
+
+/**
+ * Work that left a preparation scope is a public caller and stays refused until the pending
+ * check ends or its refusal is replaced or removed. Wait for that, bounded by a timeout, then
+ * let the caller re-read admission; a genuine refusal still fails the caller.
+ */
+export function waitForPendingAgentDatabasePreparation(
+  agentIds: Iterable<string>,
+  options: AdmissionOptions & { timeoutMs?: number } = {},
+): Promise<void> | undefined {
+  const key = stateKey(options);
+  const waits: Promise<void>[] = [];
+  for (const agentId of agentIds) {
+    const normalized = normalizeAgentId(agentId);
+    if (
+      refusalsByState.get(key)?.refusals.get(normalized)?.code !==
+      "agent-database-inspection-pending"
+    ) {
+      continue;
+    }
+    const waiterKey = `${key}\0${normalized}`;
+    const waiters = preparationWaiters.get(waiterKey) ?? new Set<() => void>();
+    preparationWaiters.set(waiterKey, waiters);
+    waits.push(
+      new Promise<void>((resolve) => {
+        const release = () => {
+          clearTimeout(timer);
+          waiters.delete(release);
+          resolve();
+        };
+        const timer = setTimeout(release, options.timeoutMs ?? PENDING_PREPARATION_WAIT_MS);
+        timer.unref?.();
+        waiters.add(release);
+      }),
+    );
+  }
+  return waits.length > 0 ? Promise.all(waits).then(() => undefined) : undefined;
+}
+
+/** Run work that outlives the current preparation without inheriting its borrowed admission. */
+export function exitAgentDatabasePreparation<T>(operation: () => T): T {
+  return preparation.exit(operation);
+}
+
 /** Preparation borrows only its own pending admission; public callers remain refused. */
 export async function preparePendingAgentDatabase(
   refusal: AgentDatabaseAdmissionRefusal,
@@ -299,6 +377,7 @@ export async function preparePendingAgentDatabase(
     current.refusals = refusals;
   } finally {
     scope.active = false;
+    releasePreparationWaiters(key, refusal.agentId);
   }
   sessionChanges.emit({ all: true, scope: { agentId: refusal.agentId, topology: true } });
 }
@@ -350,6 +429,7 @@ export function failPendingAgentDatabase(
     createAgentDatabaseInspectionRefusal({ ...refusal, reason: formatErrorMessage(cause), cause }),
   );
   current.refusals = refusals;
+  releasePreparationWaiters(key, refusal.agentId);
 }
 
 export function listAgentDatabaseAdmissionRefusals(
