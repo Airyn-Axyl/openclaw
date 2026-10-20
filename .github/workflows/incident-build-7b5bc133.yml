@@ -68,7 +68,7 @@ jobs:
       - name: typecheck
         run: pnpm tsgo:core 2>&1 | tee out/tsgo-core.log
       - run: pnpm build:package
-      - run: pnpm pack --pack-destination out
+      - run: pnpm pack --config.node-linker=hoisted --pack-destination out
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
