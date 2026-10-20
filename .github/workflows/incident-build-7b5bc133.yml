@@ -68,19 +68,8 @@ jobs:
       - name: typecheck
         run: pnpm tsgo:core 2>&1 | tee out/tsgo-core.log
       - run: pnpm build:package
-      - run: pnpm pack --config.node-linker=hoisted --pack-destination out
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: openclaw-tarball
-          path: out/*
-  hash:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions: {}
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: openclaw-tarball
-          path: out
-      - run: cd out && sha256sum *.tgz | tee SHA256SUMS && ls -l
+      - name: release tarball is produced by the main CI build-artifacts job
+        run: |
+          test "$(git rev-parse HEAD)" = "$TARGET"
+          echo "artifact for $TARGET comes from the main CI build-artifacts job;"
+          echo "root pnpm pack refuses by design for workspace @openclaw/ai"
