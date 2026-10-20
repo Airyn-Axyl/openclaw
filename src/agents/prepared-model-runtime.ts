@@ -718,7 +718,8 @@ function invalidateForAuthMutation(event: PreparedModelRuntimeAuthMutation): voi
   const leaveRecoveryScopes = <T>(operation: () => T): T =>
     readOnlyWorkerScope.exit(() => exitAgentDatabasePreparation(operation));
   // The exited job is a public caller: wait for any still-pending preparation of the affected
-  // agents instead of failing on their recorded refusal. Genuine failures keep their refusal.
+  // agents instead of failing on their recorded refusal. A genuine failure releases this wait and
+  // keeps its refusal, so request admission stays refused while this owner's runtime rebuilds.
   // Waiting happens before queueing: preparation may itself await the publication queue.
   const enqueuePublication = () =>
     leaveRecoveryScopes(() => modelRuntimeDrain.runAfter(publicationQueue, publish));

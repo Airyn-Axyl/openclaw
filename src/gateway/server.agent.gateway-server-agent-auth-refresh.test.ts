@@ -27,6 +27,7 @@ import {
   createAgentDatabaseInspectionRefusal,
   failPendingAgentDatabase,
   preparePendingAgentDatabase,
+  readAgentDatabaseAdmissionRefusal,
   recordAgentDatabaseAdmissions,
 } from "../state/agent-database-admission.js";
 import { observeGatewayRunExecution } from "./agent-command.test-helpers.js";
@@ -337,14 +338,21 @@ describe("gateway agent auth refresh dispatch", () => {
         });
       }
       failPendingAgentDatabase(refusal, new Error("synthetic inspection failure"), {});
-      // Never hung, and never published past the refusal: the agent stays unavailable.
+      // Never hung: the release settles the publication instead of holding it for the bound.
       const outcome = await settled.promise;
-      expect(outcome.phase).toBe("failed");
-      await expect(
-        loadPublishedGatewayReplyDispatchRuntime({ agentId: affectedAgentId }),
-      ).rejects.toThrow(
-        `prepared reply dispatch runtime owner was not published for ${affectedAgentId}`,
+      // This owner was prepared before the refusal, so its auth refresh still rebuilds. Runtime
+      // publication is not the availability gate; admission is, and it keeps the failed refusal.
+      expect(outcome.phase).toBe("published");
+      expect(readAgentDatabaseAdmissionRefusal(affectedAgentId)?.code).toBe(
+        "agent-database-inspection-failed",
       );
+      const runId = "idem-agent-auth-prepare-failed";
+      const refused = sendAgentRpc(gatewaySuite.ws, { agentId: affectedAgentId, runId });
+      await expect(refused.response).resolves.toMatchObject({
+        ok: false,
+        error: { code: "UNAVAILABLE" },
+      });
+      expect(agentCommandCallsFor(runId)).toHaveLength(0);
     } finally {
       unregister();
       recordAgentDatabaseAdmissions([], { source: "startup" });
