@@ -291,7 +291,7 @@ const preparationWaiters = new Map<string, Set<() => void>>();
  * term); the 2026-10-19 incident check took 78 s. Six times the base budget keeps ordinary
  * recovery inside the wait; past it the publish is queued and fails on its own refusal.
  */
-export const PENDING_PREPARATION_WAIT_MS = 6 * 300_000;
+const PENDING_PREPARATION_WAIT_MS = 6 * 300_000;
 
 function releasePreparationWaiters(key: string, agentId?: string): void {
   for (const [waiterKey, waiters] of preparationWaiters) {
