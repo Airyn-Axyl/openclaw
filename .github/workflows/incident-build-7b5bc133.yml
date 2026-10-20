@@ -1,4 +1,4 @@
-name: incident-build-12f68b5d
+name: incident-build-1130f395
 # Throwaway, lives only on ci/build-7b5bc133, never merged, deleted when the incident closes.
 # Tests, fail-before proofs, typecheck and tarball for exact commit 12f68b5d81481eb7bfa494815d418de5a8645b26.
 on:
@@ -6,8 +6,8 @@ on:
     branches: [ci/build-7b5bc133]
 permissions: {}
 env:
-  TARGET: 12f68b5d81481eb7bfa494815d418de5a8645b26
-  PREV: 58d220ccaa661693efec5dcf27ede29b1da090e1
+  TARGET: 1130f39501cdfff6c77eaa25ffa0a893299874e7
+  PREV: 12f68b5d81481eb7bfa494815d418de5a8645b26
   BASE: 59cb44796b0f1f0daa0e37af8b1495abb45d9bc1
 defaults:
   run:
@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 12f68b5d81481eb7bfa494815d418de5a8645b26
+          ref: 1130f39501cdfff6c77eaa25ffa0a893299874e7
           fetch-depth: 0
           persist-credentials: false
       - run: git rev-parse HEAD
@@ -31,7 +31,7 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: format and lint on changed files (substitute for the local pre-commit hook)
         run: |
-          FILES="src/state/agent-database-admission.ts src/state/agent-database-admission.test.ts src/agents/prepared-model-runtime.ts src/gateway/server.agent.gateway-server-agent-auth-refresh.test.ts"
+          FILES="src/state/agent-database-admission.ts src/state/agent-database-admission.test.ts src/agents/prepared-model-runtime.ts src/gateway/server.agent.gateway-server-agent-auth-refresh.test.ts test/scripts/verify-stable-main-closeout.test.ts"
           mkdir -p out
           pnpm exec oxfmt --check $FILES 2>&1 | tee out/format.log
           pnpm exec oxlint $FILES 2>&1 | tee out/lint.log
@@ -39,6 +39,20 @@ jobs:
         run: mkdir -p out && pnpm test src/gateway/server.agent.gateway-server-agent-auth-refresh.test.ts --maxWorkers=1 2>&1 | tee out/tests-fixed.log
       - name: admission unit tests
         run: pnpm test src/state/agent-database-admission.test.ts --maxWorkers=1 2>&1 | tee out/tests-admission.log
+      - name: closeout release test with fix
+        run: pnpm test test/scripts/verify-stable-main-closeout.test.ts --maxWorkers=1 2>&1 | tee out/tests-closeout-fixed.log
+      - name: baseline proof (closeout test at BASE must fail in a fork repo)
+        run: |
+          mkdir -p out
+          git checkout "$BASE" -- test/scripts/verify-stable-main-closeout.test.ts
+          set +e
+          pnpm test test/scripts/verify-stable-main-closeout.test.ts --maxWorkers=1 > out/tests-baseline-fork.log 2>&1
+          rc=$?
+          set -e
+          git checkout "$TARGET" -- test/scripts/verify-stable-main-closeout.test.ts
+          echo baseline_exit=$rc
+          test $rc -ne 0
+
       - name: fail-before proof A (previous head logic, no waiter release)
         continue-on-error: true
         run: |
