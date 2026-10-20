@@ -1,4 +1,4 @@
-name: incident-build-1130f395
+name: incident-build-7428660a
 # Throwaway, lives only on ci/build-7b5bc133, never merged, deleted when the incident closes.
 # Tests, fail-before proofs, typecheck and tarball for exact commit 12f68b5d81481eb7bfa494815d418de5a8645b26.
 on:
@@ -6,8 +6,8 @@ on:
     branches: [ci/build-7b5bc133]
 permissions: {}
 env:
-  TARGET: 1130f39501cdfff6c77eaa25ffa0a893299874e7
-  PREV: 12f68b5d81481eb7bfa494815d418de5a8645b26
+  TARGET: 7428660ac0815abfdb08365666ed76bd2ded3019
+  PREV: 1130f39501cdfff6c77eaa25ffa0a893299874e7
   BASE: 59cb44796b0f1f0daa0e37af8b1495abb45d9bc1
 defaults:
   run:
@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 1130f39501cdfff6c77eaa25ffa0a893299874e7
+          ref: 7428660ac0815abfdb08365666ed76bd2ded3019
           fetch-depth: 0
           persist-credentials: false
       - run: git rev-parse HEAD
